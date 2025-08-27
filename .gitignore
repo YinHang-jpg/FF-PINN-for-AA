@@ -1,0 +1,38 @@
+# 排除不需要的文件和目录
+
+# 大型PDF文件
+*.pdf
+
+# 缓存目录
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 数据目录
+data/
+density_plots/
+
+# 虚拟环境
+DEM/
+
+# 应用目录
+app/
+
+# 检查点文件
+.ipynb_checkpoints/
+
+# 测试文件（保留核心的）
+test_*.py
+simple_*.py
+basic_*.py
+quick_*.py
+check_*.py
+
+# 其他不需要的文件
+*.ipynb
+README_collision.md
+
+# 系统文件
+.DS_Store
+Thumbs.db
