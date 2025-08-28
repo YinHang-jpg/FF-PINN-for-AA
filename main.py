@@ -81,7 +81,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=500, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
 
 # 测试粒子
 if USE_TEST_PARTICLE:
@@ -135,14 +135,14 @@ sound_img = ax_particles.imshow(
 # 普通粒子
 scatter = ax_particles.scatter(positions[:, 0] * 1000,
                      positions[:, 1] * 1000,
-                     s=(radii * 1e6 * 8)**2,
+                     s=(radii * 1e6 * 4)**2,
                      c='blue', alpha=0.6)
 
 # 测试粒子 + 尾流箭头
 if USE_TEST_PARTICLE:
     test_scatter = ax_particles.scatter(test_positions[:, 0] * 1000,
                               test_positions[:, 1] * 1000,
-                              s=(test_radii * 1e6 * 8)**2,
+                              s=(test_radii * 1e6 * 4)**2,
                               c=test_particle_info['color'],
                               alpha=0.8,
                               marker=test_particle_info['marker'])
@@ -223,7 +223,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-6
+    dt = 1e-7
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -265,48 +265,10 @@ def update(frame):
 
     # 应用声辐射力 (ARF)
     if USE_ARF:
-        # 计算声场和压力梯度
-        X, Y, P = compute_sound_field(domain_size=domain_size, resolution=(200, 200), time=t)
-        Nx, Ny = (200, 200)
-        Lx, Ly = domain_size
-        dx = Lx / (Nx - 1)
-        dy = Ly / (Ny - 1)
-        
-        # 计算压力梯度
-        if IS_STANDING_WAVE:
-            dP_dy, dP_dx = np.gradient(P**2, dy, dx, edge_order=2)
-        else:
-            dP_dy, dP_dx = np.gradient(P, dy, dx, edge_order=2)
-        
-        # 计算第一个粒子的ARF
-        from mechanisms.ARF import bilinear_interpolate
-        first_particle_pos = positions[0]
-        first_particle_mass = mass[0]
-        
-        # 插值计算第一个粒子位置的压力梯度
-        grad_x = bilinear_interpolate(dP_dx, first_particle_pos[0], first_particle_pos[1], dx, dy)
-        grad_y = bilinear_interpolate(dP_dy, first_particle_pos[0], first_particle_pos[1], dy, dy)
-        
-        # 计算ARF力
-        arf_strength = 1e-10
-        arf_force_x = -arf_strength * grad_x
-        arf_force_y = -arf_strength * grad_y
-        arf_force_magnitude = np.sqrt(arf_force_x**2 + arf_force_y**2)
-        
-        # 每100帧打印一次ARF信息
-        if frame % 100 == 0:
-            print(f"=== ARF Information at t = {t:.6f} s ===")
-            print(f"Particle 0 position: ({first_particle_pos[0]*1000:.3f}, {first_particle_pos[1]*1000:.3f}) mm")
-            print(f"Pressure gradient: ({grad_x:.2e}, {grad_y:.2e}) Pa/m")
-            print(f"ARF force: ({arf_force_x:.2e}, {arf_force_y:.2e}) N")
-            print(f"ARF force magnitude: {arf_force_magnitude:.2e} N")
-            print(f"Particle mass: {first_particle_mass:.2e} kg")
-            print("=" * 50)
-        
-        # 应用ARF到所有粒子
+        # 将ARF计算与方向判定完全交由 ARF.py 处理
         positions, velocities = compute_pressure_gradient_and_apply_arf(
-            positions, velocities, mass, dt, domain_size, (200, 200), t, compute_sound_field, 
-            arf_strength=arf_strength, is_standing_wave=IS_STANDING_WAVE
+            positions, velocities, mass, dt, domain_size, (200, 200), t, compute_sound_field,
+            arf_strength=1e-10, is_standing_wave=IS_STANDING_WAVE
         )
 
     # 应用重力

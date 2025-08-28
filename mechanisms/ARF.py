@@ -22,6 +22,8 @@ def bilinear_interpolate(grid, x, y, dx, dy):
 def compute_pressure_gradient_and_apply_arf(
     positions, velocities, mass, dt, domain_size, resolution, time, compute_sound_field, arf_strength=1e-23, is_standing_wave=False
 ):
+    """根据声场计算压力（或压力平方）的空间梯度，并施加声涌辐射力。
+    方向严格为负梯度方向：F = -k * ∇(P) 或 F = -k * ∇(P^2)（驻波）。"""
     X, Y, P = compute_sound_field(domain_size=domain_size, resolution=resolution, time=time)
     Nx, Ny = resolution
     Lx, Ly = domain_size
@@ -30,15 +32,28 @@ def compute_pressure_gradient_and_apply_arf(
 
     # 驻波用 -∇(p^2)，行波用 -∇p
     if is_standing_wave:
-        dP_dy, dP_dx = np.gradient(P**2, dy, dx, edge_order=2)
+        P_field = P**2
     else:
-        dP_dy, dP_dx = np.gradient(P, dy, dx, edge_order=2)
+        P_field = P
+
+    dP_dy, dP_dx = np.gradient(P_field, dy, dx, edge_order=2)
 
     grad = np.zeros_like(positions)
     for i, (x, y) in enumerate(positions):
-        grad[i, 0] = bilinear_interpolate(dP_dx, x, y, dx, dy)  # x方向
-        grad[i, 1] = bilinear_interpolate(dP_dy, x, y, dx, dy)  # y方向
+        # 注意：np.gradient 返回 d/dy 在第一项，d/dx 在第二项
+        gx = bilinear_interpolate(dP_dx, x, y, dx, dy)
+        gy = bilinear_interpolate(dP_dy, x, y, dx, dy)
+        grad[i, 0] = gx
+        grad[i, 1] = gy
 
-    velocities = velocities - (arf_strength * grad / mass[:, None]) * dt
+    # 力方向严格沿负梯度
+    arf_force = -arf_strength * grad
+
+    # 加速度 = F / m
+    accelerations = arf_force / mass[:, None]
+
+    # 显式欧拉更新
+    velocities = velocities + accelerations * dt
     positions = positions + velocities * dt
+
     return positions, velocities
