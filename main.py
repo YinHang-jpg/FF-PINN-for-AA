@@ -223,7 +223,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-7
+    dt = 1e-6
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -268,7 +268,7 @@ def update(frame):
         # 将ARF计算与方向判定完全交由 ARF.py 处理
         positions, velocities = compute_pressure_gradient_and_apply_arf(
             positions, velocities, mass, dt, domain_size, (200, 200), t, compute_sound_field,
-            arf_strength=1e-10, is_standing_wave=IS_STANDING_WAVE
+            arf_strength=1e-20, is_standing_wave=IS_STANDING_WAVE
         )
 
     # 应用重力

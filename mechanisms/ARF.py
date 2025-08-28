@@ -22,31 +22,25 @@ def bilinear_interpolate(grid, x, y, dx, dy):
 def compute_pressure_gradient_and_apply_arf(
     positions, velocities, mass, dt, domain_size, resolution, time, compute_sound_field, arf_strength=1e-23, is_standing_wave=False
 ):
-    """根据声场计算压力（或压力平方）的空间梯度，并施加声涌辐射力。
-    方向严格为负梯度方向：F = -k * ∇(P) 或 F = -k * ∇(P^2)（驻波）。"""
+    """使用瞬时声压场的梯度计算声涌辐射力：F = -k * ∇P。
+    这会使粒子始终沿着压力下降方向运动（趋向低压区）。"""
     X, Y, P = compute_sound_field(domain_size=domain_size, resolution=resolution, time=time)
     Nx, Ny = resolution
     Lx, Ly = domain_size
     dx = Lx / (Nx - 1)
     dy = Ly / (Ny - 1)
 
-    # 驻波用 -∇(p^2)，行波用 -∇p
-    if is_standing_wave:
-        P_field = P**2
-    else:
-        P_field = P
-
-    dP_dy, dP_dx = np.gradient(P_field, dy, dx, edge_order=2)
+    # 使用瞬时压力场
+    dP_dy, dP_dx = np.gradient(P, dy, dx, edge_order=2)
 
     grad = np.zeros_like(positions)
     for i, (x, y) in enumerate(positions):
-        # 注意：np.gradient 返回 d/dy 在第一项，d/dx 在第二项
         gx = bilinear_interpolate(dP_dx, x, y, dx, dy)
         gy = bilinear_interpolate(dP_dy, x, y, dx, dy)
         grad[i, 0] = gx
         grad[i, 1] = gy
 
-    # 力方向严格沿负梯度
+    # 力方向严格沿负梯度（指向更低的瞬时压力）
     arf_force = -arf_strength * grad
 
     # 加速度 = F / m
