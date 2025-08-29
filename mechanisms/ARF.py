@@ -1,5 +1,7 @@
 import numpy as np
 
+ARF_STRENGTH = 1e-12     # 与ARF计算保持一致
+
 def bilinear_interpolate(grid, x, y, dx, dy):
     Nx = grid.shape[1]
     Ny = grid.shape[0]
@@ -20,7 +22,7 @@ def bilinear_interpolate(grid, x, y, dx, dy):
     )
 
 def compute_pressure_gradient_and_apply_arf(
-    positions, velocities, mass, dt, domain_size, resolution, time, compute_sound_field, arf_strength=1e-23, is_standing_wave=False
+    positions, velocities, mass, dt, domain_size, resolution, time, compute_sound_field, arf_strength=ARF_STRENGTH, is_standing_wave=False
 ):
     """使用瞬时声压场的梯度计算声涌辐射力：F = -k * ∇P。
     这会使粒子始终沿着压力下降方向运动（趋向低压区）。"""

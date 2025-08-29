@@ -11,14 +11,11 @@ def initialize_particles(N=100, domain_size=(0.01, 0.01), diameter=2e-6, density
     :return: 位置 (N,2)、速度 (N,2)、半径数组 (N,), 质量数组 (N,)
     """
     Lx, Ly = domain_size
-    # 均匀分布粒子位置（网格中心点），尽量覆盖整个域
-    nx = int(np.ceil(np.sqrt(N)))
-    ny = int(np.ceil(N / nx))
-    x_centers = (np.arange(nx) + 0.5) * (Lx / nx)
-    y_centers = (np.arange(ny) + 0.5) * (Ly / ny)
-    X, Y = np.meshgrid(x_centers, y_centers)
-    positions_grid = np.vstack((X.ravel(), Y.ravel())).T
-    positions = positions_grid[:N]
+    # 将粒子均匀分布在一横行上，y坐标固定在域的中心
+    x_positions = np.linspace(0, Lx, N, endpoint=False)  # 均匀分布x坐标
+    y_position = Ly / 2  # y坐标固定在域中心
+    
+    positions = np.column_stack((x_positions, np.full(N, y_position)))
 
     velocities = np.zeros_like(positions)
     radii = np.ones(N) * (diameter / 2)

@@ -8,7 +8,7 @@ import psutil
 import time
 import threading
 import os
-
+from mechanisms.ARF import ARF_STRENGTH
 # 配置开关
 USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
@@ -19,6 +19,10 @@ USE_AGGLOMERATION = False
 USE_BROWNIAN = False
 USE_ACOUSTIC_WAKE = True  # 开启尾流场影响
 USE_COLLISION = False  # 开启碰撞处理
+
+# 调试打印配置
+TARGET_PARTICLE_INDEX = 0  # 要监控的粒子索引
+
 
 # 仿真时间累计变量
 simulation_time = 0.0  # 累计仿真时间
@@ -34,7 +38,7 @@ else:
     from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
     IS_STANDING_WAVE = True
 
-from mechanisms.ARF import compute_pressure_gradient_and_apply_arf
+from mechanisms.ARF import compute_pressure_gradient_and_apply_arf, bilinear_interpolate
 from mechanisms.gravity import apply_gravity
 from mechanisms.Stokes_drag import apply_stokes_drag
 from mechanisms.agglomeration import apply_agglomeration
@@ -81,7 +85,9 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=10, domain_size=domain_size)
+# 记录初始位置用于位移计算
+initial_positions = positions.copy()
 
 # 测试粒子
 if USE_TEST_PARTICLE:
@@ -198,7 +204,7 @@ frame_times = []
 last_frame_time = time.time()
 
 def update(frame):
-    global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved
+    global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved, last_save_time, initial_positions
     if USE_TEST_PARTICLE:
         global test_positions, test_velocities, test_radii, test_mass, wake_X, wake_Y, wake_quiver
 
@@ -223,7 +229,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-6
+    dt = 1e-7
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -268,7 +274,7 @@ def update(frame):
         # 将ARF计算与方向判定完全交由 ARF.py 处理
         positions, velocities = compute_pressure_gradient_and_apply_arf(
             positions, velocities, mass, dt, domain_size, (200, 200), t, compute_sound_field,
-            arf_strength=1e-20, is_standing_wave=IS_STANDING_WAVE
+            arf_strength=ARF_STRENGTH, is_standing_wave=IS_STANDING_WAVE
         )
 
     # 应用重力
@@ -356,7 +362,8 @@ def update(frame):
         wake_quiver.set_UVC(wake_Vx.ravel(), wake_Vy.ravel(), wake_speed.ravel())
 
     # 更新声场 & 粒子位置
-    _, _, P = compute_sound_field(domain_size=domain_size, resolution=(200, 200), time=t)
+    Nx, Ny = (200, 200)
+    _, _, P = compute_sound_field(domain_size=domain_size, resolution=(Nx, Ny), time=t)
     sound_img.set_data(P)
     scatter.set_offsets(positions * 1000)
     
@@ -373,6 +380,54 @@ def update(frame):
     ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
     
     ax_density.set_title(f"Particle Density Distribution (t = {t:.6f} s)")
+
+    # 每100个时步打印一次选定粒子的物理量
+    if frame % 100 == 0 and len(positions) > TARGET_PARTICLE_INDEX:
+        Lx, Ly = domain_size
+        dx = Lx / (Nx - 1)
+        dy = Ly / (Ny - 1)
+        dP_dy, dP_dx = np.gradient(P, dy, dx, edge_order=2)
+
+        px, py = positions[TARGET_PARTICLE_INDEX]
+        local_pressure = bilinear_interpolate(P, px, py, dx, dy)
+        gx = bilinear_interpolate(dP_dx, px, py, dx, dy)
+        gy = bilinear_interpolate(dP_dy, px, py, dx, dy)
+        grad_vec = np.array([gx, gy])
+
+        # 仅ARF分量的力
+        arf_force = -ARF_STRENGTH * grad_vec
+
+        # 斯托克斯阻力（相对静止流体）
+        fluid_viscosity = 1.79e-5
+        drag_coeff = 6 * np.pi * fluid_viscosity * radii[TARGET_PARTICLE_INDEX]
+        stokes_force = -drag_coeff * velocities[TARGET_PARTICLE_INDEX]
+
+        # 重力（如果启用）
+        if USE_GRAVITY:
+            gravity_force = np.array([0.0, -mass[TARGET_PARTICLE_INDEX] * 9.81])
+        else:
+            gravity_force = np.array([0.0, 0.0])
+
+        # 合力与加速度
+        total_force = arf_force + stokes_force + gravity_force
+        total_acc = total_force / mass[TARGET_PARTICLE_INDEX]
+
+        # 相对初始释放位置的位移
+        disp_vec = positions[TARGET_PARTICLE_INDEX] - initial_positions[TARGET_PARTICLE_INDEX]
+
+        print(
+            f"[Frame {frame} | t={t:.6e}s] Particle {TARGET_PARTICLE_INDEX}:\n"
+            f"  Position (m): {positions[TARGET_PARTICLE_INDEX]}\n"
+            f"  Displacement (m): {disp_vec} | |disp|={np.linalg.norm(disp_vec):.3e}\n"
+            f"  Velocity (m/s): {velocities[TARGET_PARTICLE_INDEX]}\n"
+            f"  ARF Force (N): {arf_force} | |F|={np.linalg.norm(arf_force):.3e}\n"
+            f"  Stokes Force (N): {stokes_force} | |F|={np.linalg.norm(stokes_force):.3e}\n"
+            f"  Gravity Force (N): {gravity_force} | |F|={np.linalg.norm(gravity_force):.3e}\n"
+            f"  Total Force (N): {total_force} | |F|={np.linalg.norm(total_force):.3e}\n"
+            f"  Total Accel (m/s^2): {total_acc} | |a|={np.linalg.norm(total_acc):.3e}\n"
+            f"  Pressure (Pa): {local_pressure:.6e}\n"
+            f"  Grad P (Pa/m): [{gx:.6e}, {gy:.6e}] | |grad|={np.linalg.norm(grad_vec):.6e}"
+        )
     
     # 每0.01s保存一次密度分布图，从0.01s到0.2s
     if t >= 0.01 and t <= 0.2 and (t - last_save_time) >= 0.01:
@@ -423,5 +478,5 @@ def update(frame):
         return sound_img, scatter, performance_text, density_line
 
 
-ani = animation.FuncAnimation(fig, update, frames=20000, interval=33, blit=False)
+ani = animation.FuncAnimation(fig, update, frames=20000, interval=0, blit=False)
 plt.show()

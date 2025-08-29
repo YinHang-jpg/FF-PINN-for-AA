@@ -1,6 +1,6 @@
 import numpy as np
 
-def apply_stokes_drag(positions, velocities, radii, mass, dt, viscosity=1e-3):
+def apply_stokes_drag(positions, velocities, radii, mass, dt, viscosity=1.79e-5):
     """
     对粒子施加斯托克斯阻力。
     :param positions: (N,2) 粒子位置
