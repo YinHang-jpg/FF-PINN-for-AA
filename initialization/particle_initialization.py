@@ -12,7 +12,8 @@ def initialize_particles(N=100, domain_size=(0.01, 0.01), diameter=2e-6, density
     """
     Lx, Ly = domain_size
     # 将粒子均匀分布在一横行上，y坐标固定在域的中心
-    x_positions = np.linspace(0, Lx, N, endpoint=False)  # 均匀分布x坐标
+    # 使用endpoint=True确保粒子分布在整个域内，包括边界
+    x_positions = np.linspace(0, Lx, N, endpoint=True)  # 均匀分布x坐标，包括边界
     y_position = Ly / 2  # y坐标固定在域中心
     
     positions = np.column_stack((x_positions, np.full(N, y_position)))

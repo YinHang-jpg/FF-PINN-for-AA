@@ -8,13 +8,13 @@ import psutil
 import time
 import threading
 import os
-from mechanisms.ARF import ARF_STRENGTH
+
 # 配置开关
 USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
 USE_ARF = True
 USE_GRAVITY = False
-USE_STOKES_DRAG = True
+USE_STOKES_DRAG = False
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
 USE_ACOUSTIC_WAKE = True  # 开启尾流场影响
@@ -38,7 +38,7 @@ else:
     from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
     IS_STANDING_WAVE = True
 
-from mechanisms.ARF import compute_pressure_gradient_and_apply_arf, bilinear_interpolate
+from mechanisms.ARF import compute_pressure_gradient_and_apply_arf, bilinear_interpolate, get_particle_arf_force
 from mechanisms.gravity import apply_gravity
 from mechanisms.Stokes_drag import apply_stokes_drag
 from mechanisms.agglomeration import apply_agglomeration
@@ -85,7 +85,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=10, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=20, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -229,7 +229,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-7
+    dt = 5e-5
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -273,8 +273,8 @@ def update(frame):
     if USE_ARF:
         # 将ARF计算与方向判定完全交由 ARF.py 处理
         positions, velocities = compute_pressure_gradient_and_apply_arf(
-            positions, velocities, mass, dt, domain_size, (200, 200), t, compute_sound_field,
-            arf_strength=ARF_STRENGTH, is_standing_wave=IS_STANDING_WAVE
+            positions, velocities, mass, radii, dt, domain_size, (200, 200), t, compute_sound_field,
+            is_standing_wave=IS_STANDING_WAVE
         )
 
     # 应用重力
@@ -394,12 +394,27 @@ def update(frame):
         gy = bilinear_interpolate(dP_dy, px, py, dx, dy)
         grad_vec = np.array([gx, gy])
 
-        # 仅ARF分量的力
-        arf_force = -ARF_STRENGTH * grad_vec
+        # 直接使用ARF.py中的函数获取ARF力，避免重复计算
+        arf_force = get_particle_arf_force(
+            particle_x=px,
+            particle_y=py, 
+            particle_radius=radii[TARGET_PARTICLE_INDEX],
+            time=t
+        )
 
-        # 斯托克斯阻力（相对静止流体）
+        # 斯托克斯阻力（包含Cunningham滑移修正）
         fluid_viscosity = 1.79e-5
-        drag_coeff = 6 * np.pi * fluid_viscosity * radii[TARGET_PARTICLE_INDEX]
+        lambda_g = 6.5e-8  # 空气分子平均自由程
+        d_p = 2 * radii[TARGET_PARTICLE_INDEX]
+        
+        # 计算Cunningham修正因子
+        ratio = d_p / lambda_g
+        exp_term = np.exp(-0.550 * ratio)
+        bracket_term = 2.514 + 0.800 * exp_term
+        C_c = 1 + bracket_term * ratio
+        
+        # 斯托克斯阻力：F_drag = -3πμ_g d_p V / C_c
+        drag_coeff = 3 * np.pi * fluid_viscosity * d_p / C_c
         stokes_force = -drag_coeff * velocities[TARGET_PARTICLE_INDEX]
 
         # 重力（如果启用）

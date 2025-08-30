@@ -1,7 +1,5 @@
 import numpy as np
 
-ARF_STRENGTH = 1e-12     # 与ARF计算保持一致
-
 def bilinear_interpolate(grid, x, y, dx, dy):
     Nx = grid.shape[1]
     Ny = grid.shape[0]
@@ -20,30 +18,118 @@ def bilinear_interpolate(grid, x, y, dx, dy):
         (1-wx)*wy*grid[y1, x0] +
         wx*wy*grid[y1, x1]
     )
+p_0 = 101325    # Pa
+# 物理参数（空气）
+rho_0 = 1.225  # 空气密度 (kg/m³)
+gamma = 1.4    # 空气绝热指数
+c_0 = 340      # 声速 (m/s)
+frequency = 10000  # Hz
+amplitude = 1e-3    # m
+def get_particle_arf_force(particle_x, particle_y, particle_radius, time):
+    """
+    获取特定粒子的声辐射力（用于调试打印）
+    
+    :param particle_x: 粒子x坐标
+    :param particle_y: 粒子y坐标
+    :param particle_radius: 粒子半径
+    :param time: 当前时间
+    :return: ARF力向量 [Fx, Fy]
+    """
+
+
+    # 计算波长和波数
+    wavelength = c_0 / frequency
+    k = 2 * np.pi / wavelength
+    omega = 2 * np.pi * frequency
+    
+    # 粒子直径
+    d_p = 2 * particle_radius
+    
+    # 计算粒子前后两个点的位置（沿x方向，因为驻波是x方向的）
+    # 根据公式：x-√2d_p/4 和 x+√2d_p/4
+    offset = np.sqrt(2) * d_p / 4
+    
+    # 前点位置
+    x_front = particle_x - offset
+    # 后点位置  
+    x_back = particle_x + offset
+    
+    # 使用解析公式计算声压
+    # p(x,t) = 2πAρ₀γsin(2πx/λ)cos(2πft)/λ
+    p_front = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_front) * np.cos(omega * time) / wavelength
+    p_back = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back) * np.cos(omega * time) / wavelength
+    
+    # 计算压力差
+    pressure_diff = p_front - p_back
+    
+    # 根据公式计算力：F_p = πd_p²[p_front - p_back]/4
+    force_magnitude = np.pi * d_p**2 * pressure_diff / 4
+    
+    # 力的方向：从高压指向低压（沿x轴方向）
+    # 如果p_front > p_back，力向右（正x方向）
+    # 如果p_front < p_back，力向左（负x方向）
+    arf_force = np.array([force_magnitude, 0.0])  # 只有x方向分量
+    
+    return arf_force
 
 def compute_pressure_gradient_and_apply_arf(
-    positions, velocities, mass, dt, domain_size, resolution, time, compute_sound_field, arf_strength=ARF_STRENGTH, is_standing_wave=False
+    positions, velocities, mass, radii, dt, domain_size, resolution, time, compute_sound_field, is_standing_wave=False
 ):
-    """使用瞬时声压场的梯度计算声涌辐射力：F = -k * ∇P。
-    这会使粒子始终沿着压力下降方向运动（趋向低压区）。"""
-    X, Y, P = compute_sound_field(domain_size=domain_size, resolution=resolution, time=time)
-    Nx, Ny = resolution
-    Lx, Ly = domain_size
-    dx = Lx / (Nx - 1)
-    dy = Ly / (Ny - 1)
-
-    # 使用瞬时压力场
-    dP_dy, dP_dx = np.gradient(P, dy, dx, edge_order=2)
-
-    grad = np.zeros_like(positions)
+    """使用图片中的解析公式计算声辐射力：F_p = πd_p²[p(x-√2d_p/4,t) - p(x+√2d_p/4,t)]/4
+    
+    其中：
+    - 声压：p(x,t) = 2πAρ₀γsin(2πx/λ)cos(2πft)/λ
+    - A: 声压振幅 (Pa)
+    - ρ₀: 介质密度 (kg/m³)
+    - γ: 绝热指数 (比热比)
+    - λ: 波长 (m)
+    - f: 频率 (Hz)
+    """
+    
+    # 计算波长
+    wavelength = c_0 / frequency
+    
+    # 计算每个粒子的ARF
+    arf_force = np.zeros_like(positions)
     for i, (x, y) in enumerate(positions):
-        gx = bilinear_interpolate(dP_dx, x, y, dx, dy)
-        gy = bilinear_interpolate(dP_dy, x, y, dx, dy)
-        grad[i, 0] = gx
-        grad[i, 1] = gy
-
-    # 力方向严格沿负梯度（指向更低的瞬时压力）
-    arf_force = -arf_strength * grad
+        # 粒子直径
+        d_p = 2 * radii[i]
+        
+        # 计算粒子前后两个点的位置（沿x方向，因为驻波是x方向的）
+        # 根据公式：x-√2d_p/4 和 x+√2d_p/4
+        offset = np.sqrt(2) * d_p / 4
+        
+        # 前点位置
+        x_front = x - offset
+        # 后点位置  
+        x_back = x + offset
+        
+        # 确保位置在域内
+        x_front = np.clip(x_front, 0, domain_size[0])
+        x_back = np.clip(x_back, 0, domain_size[0])
+        
+        # 使用解析公式计算声压
+        # p(x,t) = 2πAρ₀γsin(2πx/λ)cos(2πft)/λ
+        k = 2 * np.pi / wavelength  # 波数
+        omega = 2 * np.pi * frequency  # 角频率
+        
+        # 前点声压
+        p_front = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_front) * np.cos(omega * time) / wavelength
+        
+        # 后点声压
+        p_back = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back) * np.cos(omega * time) / wavelength
+        
+        # 计算压力差
+        pressure_diff = p_front - p_back
+        
+        # 根据公式计算力：F_p = πd_p²[p_front - p_back]/4
+        force_magnitude = np.pi * d_p**2 * pressure_diff / 4
+        
+        # 力的方向：从高压指向低压（沿x轴方向）
+        # 如果p_front > p_back，力向右（正x方向）
+        # 如果p_front < p_back，力向左（负x方向）
+        arf_force[i, 0] = force_magnitude  # x方向分量
+        arf_force[i, 1] = 0.0              # y方向分量（驻波沿x方向，y方向无梯度）
 
     # 加速度 = F / m
     accelerations = arf_force / mass[:, None]
