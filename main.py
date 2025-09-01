@@ -14,7 +14,7 @@ USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
 USE_ARF = True
 USE_GRAVITY = False
-USE_STOKES_DRAG = False
+USE_STOKES_DRAG = True
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
 USE_ACOUSTIC_WAKE = True  # 开启尾流场影响
@@ -85,7 +85,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=20, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=500, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -229,7 +229,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 5e-5
+    dt = 1e-7
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -350,12 +350,7 @@ def update(frame):
                         wake_Vy[i, j] = test_velocities[0, 1] * arrow_len * 0.2
                         wake_speed[i, j] = 0.01
 
-        # 添加调试信息
-        if frame % 100 == 0:  # 每100帧打印一次调试信息
-            print(f"Frame {frame}: Max wake speed: {np.max(wake_speed):.6f}")
-            print(f"Max wake Vx: {np.max(np.abs(wake_Vx)):.6f}, Max wake Vy: {np.max(np.abs(wake_Vy)):.6f}")
-            print(f"Non-zero arrows: {np.sum(wake_Vx != 0) + np.sum(wake_Vy != 0)}")
-            print(f"Arrow length: {arrow_len}")
+
 
         # 更新箭头显示（坐标单位转成 mm）
         wake_quiver.set_offsets(np.c_[abs_wake_X.ravel() * 1000, abs_wake_Y.ravel() * 1000])
@@ -381,70 +376,9 @@ def update(frame):
     
     ax_density.set_title(f"Particle Density Distribution (t = {t:.6f} s)")
 
-    # 每100个时步打印一次选定粒子的物理量
-    if frame % 100 == 0 and len(positions) > TARGET_PARTICLE_INDEX:
-        Lx, Ly = domain_size
-        dx = Lx / (Nx - 1)
-        dy = Ly / (Ny - 1)
-        dP_dy, dP_dx = np.gradient(P, dy, dx, edge_order=2)
 
-        px, py = positions[TARGET_PARTICLE_INDEX]
-        local_pressure = bilinear_interpolate(P, px, py, dx, dy)
-        gx = bilinear_interpolate(dP_dx, px, py, dx, dy)
-        gy = bilinear_interpolate(dP_dy, px, py, dx, dy)
-        grad_vec = np.array([gx, gy])
-
-        # 直接使用ARF.py中的函数获取ARF力，避免重复计算
-        arf_force = get_particle_arf_force(
-            particle_x=px,
-            particle_y=py, 
-            particle_radius=radii[TARGET_PARTICLE_INDEX],
-            time=t
-        )
-
-        # 斯托克斯阻力（包含Cunningham滑移修正）
-        fluid_viscosity = 1.79e-5
-        lambda_g = 6.5e-8  # 空气分子平均自由程
-        d_p = 2 * radii[TARGET_PARTICLE_INDEX]
-        
-        # 计算Cunningham修正因子
-        ratio = d_p / lambda_g
-        exp_term = np.exp(-0.550 * ratio)
-        bracket_term = 2.514 + 0.800 * exp_term
-        C_c = 1 + bracket_term * ratio
-        
-        # 斯托克斯阻力：F_drag = -3πμ_g d_p V / C_c
-        drag_coeff = 3 * np.pi * fluid_viscosity * d_p / C_c
-        stokes_force = -drag_coeff * velocities[TARGET_PARTICLE_INDEX]
-
-        # 重力（如果启用）
-        if USE_GRAVITY:
-            gravity_force = np.array([0.0, -mass[TARGET_PARTICLE_INDEX] * 9.81])
-        else:
-            gravity_force = np.array([0.0, 0.0])
-
-        # 合力与加速度
-        total_force = arf_force + stokes_force + gravity_force
-        total_acc = total_force / mass[TARGET_PARTICLE_INDEX]
-
-        # 相对初始释放位置的位移
-        disp_vec = positions[TARGET_PARTICLE_INDEX] - initial_positions[TARGET_PARTICLE_INDEX]
-
-        print(
-            f"[Frame {frame} | t={t:.6e}s] Particle {TARGET_PARTICLE_INDEX}:\n"
-            f"  Position (m): {positions[TARGET_PARTICLE_INDEX]}\n"
-            f"  Displacement (m): {disp_vec} | |disp|={np.linalg.norm(disp_vec):.3e}\n"
-            f"  Velocity (m/s): {velocities[TARGET_PARTICLE_INDEX]}\n"
-            f"  ARF Force (N): {arf_force} | |F|={np.linalg.norm(arf_force):.3e}\n"
-            f"  Stokes Force (N): {stokes_force} | |F|={np.linalg.norm(stokes_force):.3e}\n"
-            f"  Gravity Force (N): {gravity_force} | |F|={np.linalg.norm(gravity_force):.3e}\n"
-            f"  Total Force (N): {total_force} | |F|={np.linalg.norm(total_force):.3e}\n"
-            f"  Total Accel (m/s^2): {total_acc} | |a|={np.linalg.norm(total_acc):.3e}\n"
-            f"  Pressure (Pa): {local_pressure:.6e}\n"
-            f"  Grad P (Pa/m): [{gx:.6e}, {gy:.6e}] | |grad|={np.linalg.norm(grad_vec):.6e}"
-        )
     
-    # 每0.01s保存一次密度分布图，从0.01s到0.2s
+        # 每0.01s保存一次密度分布图，从0.01s到0.2s
     if t >= 0.01 and t <= 0.2 and (t - last_save_time) >= 0.01:
         # 创建密度分布图
         plt.figure(figsize=(12, 8))
@@ -459,13 +393,6 @@ def update(frame):
         filename = f'density_plot_{int(t*1000):03d}_t_{t:.6f}s.png'
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
-        
-        print(f"密度分布图已保存: {filename}")
-        print(f"仿真时间: {t:.6f} s")
-        print(f"最大相对变化: {y_max:.2f}%")
-        print(f"最小相对变化: {y_min:.2f}%")
-        print(f"已保存图片数量: {int(t * 100)}")
-        print("-" * 50)
         
         last_save_time = t  # 更新上次保存时间
 

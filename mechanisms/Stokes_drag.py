@@ -57,7 +57,7 @@ def apply_stokes_drag(positions, velocities, radii, mass, dt, viscosity=1.79e-5,
     
     # 计算阻力加速度
     drag_acceleration = drag_force / mass[:, None]
-    
+
     # 更新速度和位置（显式欧拉）
     velocities = velocities + drag_acceleration * dt
     positions = positions + velocities * dt

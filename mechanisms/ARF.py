@@ -24,10 +24,10 @@ rho_0 = 1.225  # 空气密度 (kg/m³)
 gamma = 1.4    # 空气绝热指数
 c_0 = 340      # 声速 (m/s)
 frequency = 10000  # Hz
-amplitude = 1e-3    # m
+amplitude = 5e-3    # m
 def get_particle_arf_force(particle_x, particle_y, particle_radius, time):
     """
-    获取特定粒子的声辐射力（用于调试打印）
+    获取特定粒子的声辐射力
     
     :param particle_x: 粒子x坐标
     :param particle_y: 粒子y坐标
@@ -35,8 +35,6 @@ def get_particle_arf_force(particle_x, particle_y, particle_radius, time):
     :param time: 当前时间
     :return: ARF力向量 [Fx, Fy]
     """
-
-
     # 计算波长和波数
     wavelength = c_0 / frequency
     k = 2 * np.pi / wavelength
@@ -57,7 +55,7 @@ def get_particle_arf_force(particle_x, particle_y, particle_radius, time):
     # 使用解析公式计算声压
     # p(x,t) = 2πAρ₀γsin(2πx/λ)cos(2πft)/λ
     p_front = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_front) * np.cos(omega * time) / wavelength
-    p_back = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back) * np.cos(omega * time) / wavelength
+    p_back  = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back ) * np.cos(omega * time) / wavelength
     
     # 计算压力差
     pressure_diff = p_front - p_back
@@ -104,9 +102,6 @@ def compute_pressure_gradient_and_apply_arf(
         # 后点位置  
         x_back = x + offset
         
-        # 确保位置在域内
-        x_front = np.clip(x_front, 0, domain_size[0])
-        x_back = np.clip(x_back, 0, domain_size[0])
         
         # 使用解析公式计算声压
         # p(x,t) = 2πAρ₀γsin(2πx/λ)cos(2πft)/λ
@@ -118,10 +113,10 @@ def compute_pressure_gradient_and_apply_arf(
         
         # 后点声压
         p_back = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back) * np.cos(omega * time) / wavelength
-        
+
         # 计算压力差
         pressure_diff = p_front - p_back
-        
+
         # 根据公式计算力：F_p = πd_p²[p_front - p_back]/4
         force_magnitude = np.pi * d_p**2 * pressure_diff / 4
         
@@ -133,7 +128,8 @@ def compute_pressure_gradient_and_apply_arf(
 
     # 加速度 = F / m
     accelerations = arf_force / mass[:, None]
-
+    if time == 1e-7:
+        print(x*1000, p_front, p_back, pressure_diff, force_magnitude, accelerations)
     # 显式欧拉更新
     velocities = velocities + accelerations * dt
     positions = positions + velocities * dt

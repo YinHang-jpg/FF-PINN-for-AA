@@ -4,7 +4,7 @@ import numpy as np
 frequency = 10000
 amplitude = 200
 
-def compute_sound_field(domain_size=(0.1, 0.1), resolution=(200, 200),
+def compute_sound_field(domain_size=(0.034, 0.034), resolution=(200, 200),
                         amplitude=amplitude, frequency=frequency, sound_speed=340, time=0.0):
     """
     计算给定时间下的平面驻波声压场（x方向驻波）
@@ -25,6 +25,6 @@ def compute_sound_field(domain_size=(0.1, 0.1), resolution=(200, 200),
     omega = 2 * np.pi * frequency
     k = omega / sound_speed
 
-    # 物理真实的驻波：p(x, t) = 2A cos(kx) cos(ωt)
-    p = amplitude * 2 * np.cos(k * X) * np.cos(omega * time)
+    # 物理真实的驻波：p(x, t) = 2A sin(kx) cos(ωt)
+    p = amplitude * 2 * np.sin(k * X) * np.cos(omega * time)
     return X, Y, p 
