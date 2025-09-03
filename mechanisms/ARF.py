@@ -24,7 +24,7 @@ rho_0 = 1.225  # 空气密度 (kg/m³)
 gamma = 1.4    # 空气绝热指数
 c_0 = 340      # 声速 (m/s)
 frequency = 10000  # Hz
-amplitude = 5e-3    # m
+amplitude = 1e-3    # m
 def get_particle_arf_force(particle_x, particle_y, particle_radius, time):
     """
     获取特定粒子的声辐射力
@@ -108,11 +108,8 @@ def compute_pressure_gradient_and_apply_arf(
         k = 2 * np.pi / wavelength  # 波数
         omega = 2 * np.pi * frequency  # 角频率
         
-        # 前点声压
         p_front = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_front) * np.cos(omega * time) / wavelength
-        
-        # 后点声压
-        p_back = 2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back) * np.cos(omega * time) / wavelength
+        p_back =  2 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back ) * np.cos(omega * time) / wavelength
 
         # 计算压力差
         pressure_diff = p_front - p_back
@@ -125,11 +122,11 @@ def compute_pressure_gradient_and_apply_arf(
         # 如果p_front < p_back，力向左（负x方向）
         arf_force[i, 0] = force_magnitude  # x方向分量
         arf_force[i, 1] = 0.0              # y方向分量（驻波沿x方向，y方向无梯度）
-
+        if time == 5e-7:
+            print(x*1000, p_front, p_back, pressure_diff, force_magnitude, mass[i], force_magnitude/mass[i])
     # 加速度 = F / m
     accelerations = arf_force / mass[:, None]
-    if time == 1e-7:
-        print(x*1000, p_front, p_back, pressure_diff, force_magnitude, accelerations)
+
     # 显式欧拉更新
     velocities = velocities + accelerations * dt
     positions = positions + velocities * dt

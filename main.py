@@ -12,7 +12,7 @@ import os
 # 配置开关
 USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
-USE_ARF = True
+USE_ARF = True  # 使用PINN模型计算ARF，不再使用解析公式
 USE_GRAVITY = False
 USE_STOKES_DRAG = True
 USE_AGGLOMERATION = False
@@ -38,7 +38,55 @@ else:
     from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
     IS_STANDING_WAVE = True
 
-from mechanisms.ARF import compute_pressure_gradient_and_apply_arf, bilinear_interpolate, get_particle_arf_force
+from mechanisms.ARF_PINN import ARFNet, Normalizer
+import torch
+
+def compute_arf_using_pinn(positions, velocities, mass, radii, dt, time, model, normalizer):
+    """
+    使用训练好的PINN模型计算声辐射力
+    """
+    if model is None or normalizer is None:
+        print("PINN模型未初始化，无法计算ARF")
+        return positions, velocities
+    
+    try:
+        with torch.no_grad():
+            # 准备输入数据
+            x = torch.tensor(positions[:, 0], dtype=torch.float32)
+            y = torch.tensor(positions[:, 1], dtype=torch.float32)
+            t = torch.full_like(x, time, dtype=torch.float32)
+            radius = torch.tensor(radii, dtype=torch.float32)
+
+            # 归一化输入参数
+            inputs_dict = {"x": x, "y": y, "t": t, "r": radius}
+            inputs_norm = normalizer.transform(inputs_dict)
+
+            # 前向传播（标准化域）
+            inputs_tensor = torch.stack([inputs_norm["x"], inputs_norm["y"], inputs_norm["t"], inputs_norm["r"]], dim=1)
+            outputs_norm = model(inputs_tensor)
+
+            # 反归一化输出
+            denorm = normalizer.inverse({"fx": outputs_norm[:, 0], "fy": outputs_norm[:, 1]})
+            fx, fy = denorm["fx"], denorm["fy"]
+            
+            # 转换为numpy数组
+            fx = fx.numpy()
+            fy = fy.numpy()
+            
+            # 计算加速度
+            accelerations = np.column_stack([fx, fy]) / mass[:, None]
+            
+            # 更新速度和位置
+            velocities = velocities + accelerations * dt
+            positions = positions + velocities * dt
+            
+            return positions, velocities
+            
+    except Exception as e:
+        print(f"PINN模型计算ARF时出错: {e}")
+        print("将使用零力（无ARF效应）")
+        # 如果PINN计算失败，不施加任何力，保持原有运动
+        return positions, velocities
 from mechanisms.gravity import apply_gravity
 from mechanisms.Stokes_drag import apply_stokes_drag
 from mechanisms.agglomeration import apply_agglomeration
@@ -85,9 +133,42 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=500, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=2000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
+
+# 初始化PINN模型
+print("正在加载训练好的PINN模型...")
+try:
+    # 创建模型实例
+    arf_pinn_model = ARFNet()
+    
+    # 加载训练好的模型权重
+    model_path = 'arf_pinn_model.pth'
+    if os.path.exists(model_path):
+        arf_pinn_model.load_state_dict(torch.load(model_path, map_location='cpu'))
+        print(f"成功加载模型权重: {model_path}")
+    else:
+        print(f"警告: 模型文件 {model_path} 不存在，将使用随机初始化的模型")
+    
+    # 创建训练器实例并加载归一化参数
+    arf_pinn_normalizer = Normalizer()
+    norm_params_path = 'arf_pinn_normalization_params.json'
+    if os.path.exists(norm_params_path):
+        arf_pinn_normalizer.load(norm_params_path, device='cpu')
+        print(f"成功加载归一化参数: {norm_params_path}")
+    else:
+        print(f"警告: 归一化参数文件 {norm_params_path} 不存在")
+    
+    # 设置为评估模式
+    arf_pinn_model.eval()
+    print("PINN模型初始化完成")
+    
+except Exception as e:
+    print(f"PINN模型初始化失败: {e}")
+    print("将回退到使用解析公式计算ARF")
+    arf_pinn_model = None
+    arf_pinn_normalizer = None
 
 # 测试粒子
 if USE_TEST_PARTICLE:
@@ -229,7 +310,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-7
+    dt = 1e-6
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -269,13 +350,19 @@ def update(frame):
         # 原有的斯托克斯阻力
         positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
 
-    # 应用声辐射力 (ARF)
+    # 应用声辐射力 (ARF) - 使用PINN模型
     if USE_ARF:
-        # 将ARF计算与方向判定完全交由 ARF.py 处理
-        positions, velocities = compute_pressure_gradient_and_apply_arf(
-            positions, velocities, mass, radii, dt, domain_size, (200, 200), t, compute_sound_field,
-            is_standing_wave=IS_STANDING_WAVE
-        )
+        if arf_pinn_model is not None and arf_pinn_normalizer is not None:
+            # 使用训练好的PINN模型计算ARF
+            if frame % 100 == 0:  # 每100帧打印一次状态
+                print(f"使用PINN模型计算ARF - 时间: {t:.6f}s, 粒子数: {len(positions)}")
+            positions, velocities = compute_arf_using_pinn(
+                positions, velocities, mass, radii, dt, t, arf_pinn_model, arf_pinn_normalizer
+            )
+        else:
+            if frame % 100 == 0:  # 每100帧打印一次状态
+                print("警告: PINN模型未初始化，跳过ARF计算")
+            # 不施加ARF力，保持原有运动
 
     # 应用重力
     if USE_GRAVITY:
@@ -286,8 +373,6 @@ def update(frame):
         positions, velocities, radii, mass = apply_collision_physics(
             positions, velocities, radii, mass, dt
         )
-
-
 
     if USE_TEST_PARTICLE:
         test_positions = update_test_particle_position(test_positions, test_velocities, domain_size, dt)
@@ -400,21 +485,25 @@ def update(frame):
         test_scatter.set_offsets(test_positions * 1000)
         
         # 更新性能信息显示
+        pinn_status = "✓ PINN Active" if (arf_pinn_model is not None and arf_pinn_normalizer is not None) else "✗ PINN Inactive"
         performance_text.set_text(
             f'Simulation Time: {t:.6f} s\n'
             f'FPS: {performance_data["fps"]:.1f}\n'
             f'Frame Time: {performance_data["frame_time"]:.1f}ms\n'
-            f'Particles: {performance_data["particle_count"]}'
+            f'Particles: {performance_data["particle_count"]}\n'
+            f'ARF Model: {pinn_status}'
         )
         
         return sound_img, scatter, test_scatter, wake_quiver, performance_text, density_line
     else:
         # 更新性能信息显示
+        pinn_status = "✓ PINN Active" if (arf_pinn_model is not None and arf_pinn_normalizer is not None) else "✗ PINN Inactive"
         performance_text.set_text(
             f'Simulation Time: {t:.6f} s\n'
             f'FPS: {performance_data["fps"]:.1f}\n'
             f'Frame Time: {performance_data["frame_time"]:.1f}ms\n'
-            f'Particles: {performance_data["particle_count"]}'
+            f'Particles: {performance_data["particle_count"]}\n'
+            f'ARF Model: {pinn_status}'
         )
         
         return sound_img, scatter, performance_text, density_line
