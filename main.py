@@ -57,17 +57,18 @@ def compute_arf_using_pinn(positions, velocities, mass, radii, dt, time, model, 
             t = torch.full_like(x, time, dtype=torch.float32)
             radius = torch.tensor(radii, dtype=torch.float32)
 
-            # 归一化输入参数
-            inputs_dict = {"x": x, "y": y, "t": t, "r": radius}
+            # 归一化输入参数（仅 x 用于模型输入，t=0）
+            inputs_dict = {"x": x}
             inputs_norm = normalizer.transform(inputs_dict)
 
             # 前向传播（标准化域）
-            inputs_tensor = torch.stack([inputs_norm["x"], inputs_norm["y"], inputs_norm["t"], inputs_norm["r"]], dim=1)
+            inputs_tensor = inputs_norm["x"]
             outputs_norm = model(inputs_tensor)
 
-            # 反归一化输出
-            denorm = normalizer.inverse({"fx": outputs_norm[:, 0], "fy": outputs_norm[:, 1]})
-            fx, fy = denorm["fx"], denorm["fy"]
+            # 反归一化输出（模型只输出 Fx，Fy 置零）
+            denorm = normalizer.inverse({"fx": outputs_norm[:, 0]})
+            fx = denorm["fx"] if isinstance(denorm["fx"], torch.Tensor) else torch.tensor(denorm["fx"])
+            fy = torch.zeros_like(fx)
             
             # 转换为numpy数组
             fx = fx.numpy()
