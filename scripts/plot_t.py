@@ -122,14 +122,14 @@ def main():
     pred_factor = pred_norm * float(norms['time_factor_sigma']) + float(norms['time_factor_mu'])
 
     plt.figure(figsize=(10, 5))
-    plt.plot(t_range_us, f_theory, 'b-', label='理论值', linewidth=2)
-    plt.plot(t_range_us, pred_factor.detach().cpu().numpy().squeeze(1), 'r--', label='PINN预测', linewidth=1.5)
-    plt.xlabel('时间 t (μs)')
-    plt.ylabel('时间因子 cos(ωt)')
-    plt.title('F(t) 理论 vs PINN')
+    plt.plot(t_range_us, f_theory, 'b-', label='Theory', linewidth=2)
+    plt.plot(t_range_us, pred_factor.detach().cpu().numpy().squeeze(1), 'r--', label='PINN Prediction', linewidth=1.5)
+    plt.xlabel('Time t (μs)')
+    plt.ylabel('Temporal factor cos(ωt)')
+    plt.title('F(t): Theory vs PINN')
     plt.grid(True, alpha=0.3)
     plt.legend()
-    # 与 ARF_PINN_t.py 一致的关键点标记（假设 t_min_s==0）
+    # Mark key points consistent with ARF_PINN_t.py (assuming t_min_s==0)
     T_s = (t_max_s - t_min_s)
     if T_s > 0:
         key_points_us = [t_min_s * 1e6 + frac * T_s * 1e6 for frac in [0.0, 0.25, 0.5, 0.75, 1.0]]
