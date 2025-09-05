@@ -166,8 +166,8 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000)
 
     # 训练直到达到目标损失
-    target_loss = 1e-3  # 更严格的目标
-    print_interval = 5000
+    target_loss = 1e-5  # 更严格的目标
+    print_interval = 500
     epoch = 0
     losses = []
 
