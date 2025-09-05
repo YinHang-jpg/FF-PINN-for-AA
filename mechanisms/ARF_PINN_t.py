@@ -218,8 +218,8 @@ def main():
         plt.show()
 
     # 保存模型与归一化参数
-    torch.save(model.state_dict(), 'arf_model_t.pth')
-    with open('arf_model_t_normalization_params.json', 'w') as f:
+    torch.save(model.state_dict(), 'PINN/arf_model_t.pth')
+    with open('PINN/arf_model_t_normalization_params.json', 'w') as f:
         json.dump({
             't_min': t_min, 't_max': t_max,
             'time_factor_mu': float(time_factor_mu.item()),
