@@ -221,6 +221,22 @@ def main():
         print(f"\n=== 测试结果 ===")
         print(f"平均相对误差: {mean_error*100:.2f}%")
         print(f"最大相对误差: {max_error*100:.2f}%")
+
+        # 绘制 F(x) 理论值 与 模型预测 曲线
+        x_mm = (test_x * 1000.0).detach().cpu().numpy().flatten()
+        pred_pn = (pred_force * 1e12).detach().cpu().numpy().flatten()
+        true_pn = (true_force * 1e12).detach().cpu().numpy().flatten()
+        plt.figure(figsize=(10, 5))
+        plt.plot(x_mm, true_pn, 'b-', label='理论值', linewidth=2)
+        plt.plot(x_mm, pred_pn, 'r--', label='PINN预测', linewidth=1.5)
+        plt.xlabel('位置 x (mm)')
+        plt.ylabel('声辐射力 F (pN)')
+        plt.title('F(x) 理论 vs PINN')
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.xlim(x_min * 1000.0, x_max * 1000.0)
+        plt.tight_layout()
+        plt.show()
         print("\n位置(mm) | 预测力(pN) | 理论力(pN) | 相对误差")
         print("-"*60)
         for i in range(0, 100, 10):  # 每10个点显示一个
@@ -230,15 +246,15 @@ def main():
             rel = abs(pv - tv) / (abs(tv) + 1e-30)
             print(f"{xv:8.1f} | {pv:11.2e} | {tv:11.2e} | {rel:8.1%}")
 
-    # 保存模型与归一化参数
-    torch.save(model.state_dict(), 'arf_pinn_model.pth')
-    with open('arf_pinn_normalization_params.json', 'w') as f:
+    # 保存模型与归一化参数到 PINN/ 目录，供可视化脚本使用
+    torch.save(model.state_dict(), 'PINN/arf_model_x.pth')
+    with open('PINN/arf_model_x_normalization_params.json', 'w') as f:
         json.dump({
             'x_min': x_min, 'x_max': x_max,
             'force_mu': float(force_mu.item()),
             'force_sigma': float(force_sigma.item())
         }, f)
-    print("模型和归一化参数已保存。")
+    print("模型和归一化参数已保存至 PINN/。")
 
 
 if __name__ == "__main__":
