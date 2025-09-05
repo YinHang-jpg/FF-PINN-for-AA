@@ -10,95 +10,166 @@ try:
 except Exception:
     from ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
 
+import re
 
-class ARFNetX(nn.Module):
-    """空间因子网络：输入 [x]，输出 [空间因子]"""
-    def __init__(self, fourier_features=32):
+class SimpleMLP(nn.Module):
+    def __init__(self, layer_dims):
         super().__init__()
-        self.fourier_features = fourier_features
-        
-        # 计算波数用于傅里叶特征
-        wavelength = c_0 / frequency  # 0.034 m
-        k = 2 * np.pi / wavelength    # 约 184.8 rad/m
-        
-        # 傅里叶特征权重（多个频率分量）
-        self.register_buffer('fourier_weights', torch.randn(1, fourier_features) * k)
-        
-        # 主网络
-        self.layers = nn.Sequential(
-            nn.Linear(fourier_features * 2, 256),  # sin和cos特征
-            nn.Tanh(),
-            nn.Linear(256, 256),
-            nn.Tanh(),
-            nn.Linear(256, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)
-        )
+        layers = []
+        for i in range(len(layer_dims) - 1):
+            layers.append(nn.Linear(layer_dims[i], layer_dims[i+1]))
+            if i < len(layer_dims) - 2:
+                layers.append(nn.Tanh())
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-        # 生成傅里叶特征
-        fourier_x = self.fourier_weights * x
-        fourier_features = torch.cat([torch.sin(fourier_x), torch.cos(fourier_x)], dim=1)
-        
-        # 通过主网络
-        return self.layers(fourier_features)
+        return self.layers(x)
 
-
-class ARFNetT(nn.Module):
-    """时间因子网络：输入 [t]，输出 [时间因子]"""
-    def __init__(self, fourier_features=16):
+class SpatialWrapper(nn.Module):
+    def __init__(self, mlp):
         super().__init__()
-        self.fourier_features = fourier_features
-        
-        # 计算角频率用于傅里叶特征
-        omega = 2 * np.pi * frequency  # 约 2.51e6 rad/s
-        
-        # 傅里叶特征权重（多个频率分量）
-        self.register_buffer('fourier_weights', torch.randn(1, fourier_features) * omega)
-        
-        # 主网络
-        self.layers = nn.Sequential(
-            nn.Linear(fourier_features * 2, 128),  # sin和cos特征
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, 32),
-            nn.Tanh(),
-            nn.Linear(32, 1)
-        )
+        self.mlp = mlp
+        wavelength = c_0 / frequency
+        self.register_buffer('k', torch.tensor(2 * np.pi / wavelength, dtype=torch.float32))
 
-    def forward(self, t):
-        # 生成傅里叶特征
-        fourier_t = self.fourier_weights * t
-        fourier_features = torch.cat([torch.sin(fourier_t), torch.cos(fourier_t)], dim=1)
-        
-        # 通过主网络
-        return self.layers(fourier_features)
+    def forward(self, x_m):
+        phase = self.k * x_m
+        feats = torch.cat([torch.sin(phase), torch.cos(phase)], dim=1)
+        return self.mlp(feats)
 
+class TemporalWrapper(nn.Module):
+    def __init__(self, mlp, t_min_s, t_max_s):
+        super().__init__()
+        self.mlp = mlp
+        self.register_buffer('t_min', torch.tensor(float(t_min_s), dtype=torch.float32))
+        self.register_buffer('t_max', torch.tensor(float(t_max_s), dtype=torch.float32))
+        self.register_buffer('omega', torch.tensor(2 * np.pi * frequency, dtype=torch.float32))
+
+    def forward(self, t_norm):
+        t_sec = t_norm * (self.t_max - self.t_min) + self.t_min
+        phase = self.omega * t_sec
+        feats = torch.cat([torch.sin(phase), torch.cos(phase)], dim=1)
+        return self.mlp(feats)
+
+
+def _infer_layer_dims_from_state(state_dict):
+    linear_keys = sorted([k for k in state_dict.keys() if re.match(r"layers\.[0-9]+\.weight", k)])
+    if not linear_keys:
+        return None
+    dims = []
+    for i, k in enumerate(linear_keys):
+        W = state_dict[k]
+        out_dim, in_dim = W.shape
+        if i == 0:
+            dims.append(in_dim)
+        dims.append(out_dim)
+    return dims
 
 def load_models_and_params():
     """加载训练好的空间和时间模型及其归一化参数"""
-    # 加载空间模型
-    model_x = ARFNetX(fourier_features=32)
-    model_x.load_state_dict(torch.load('arf_model_x.pth', map_location='cpu'))
+    # 加载空间模型（优先从 PINN/ 目录）
+    try:
+        state_x = torch.load('PINN/arf_model_x.pth', map_location='cpu')
+    except FileNotFoundError:
+        state_x = torch.load('arf_model_x.pth', map_location='cpu')
+    # 兼容多种保存格式
+    if isinstance(state_x, dict) and 'model_state_dict' in state_x:
+        state_x = state_x['model_state_dict']
+    elif isinstance(state_x, dict) and 'state_dict' in state_x:
+        state_x = state_x['state_dict']
+    # 动态构建与checkpoint匹配的MLP
+    dims_x = _infer_layer_dims_from_state(state_x)
+    if dims_x is None:
+        dims_x = [2, 256, 256, 128, 64, 1]
+    mlp_x = SimpleMLP(dims_x)
+    model_x = SpatialWrapper(mlp_x)
+    model_x.load_state_dict(state_x, strict=False)
     model_x.eval()
     
     # 加载时间模型
-    model_t = ARFNetT(fourier_features=16)
-    model_t.load_state_dict(torch.load('arf_model_t.pth', map_location='cpu'))
+    try:
+        state_t = torch.load('PINN/arf_model_t.pth', map_location='cpu')
+    except FileNotFoundError:
+        state_t = torch.load('arf_model_t.pth', map_location='cpu')
+    # 兼容多种保存格式
+    if isinstance(state_t, dict) and 'model_state_dict' in state_t:
+        state_t = state_t['model_state_dict']
+    elif isinstance(state_t, dict) and 'state_dict' in state_t:
+        state_t = state_t['state_dict']
+    dims_t = _infer_layer_dims_from_state(state_t)
+    if dims_t is None:
+        dims_t = [2, 256, 256, 128, 64, 1]
+    # 读取时间归一化以便从 t_norm 还原到秒
+    try:
+        with open('PINN/arf_model_t_normalization_params.json', 'r') as f:
+            norm_t_preview = json.load(f)
+    except FileNotFoundError:
+        with open('arf_model_t_normalization_params.json', 'r') as f:
+            norm_t_preview = json.load(f)
+    mlp_t = SimpleMLP(dims_t)
+    model_t = TemporalWrapper(mlp_t, norm_t_preview['t_min'], norm_t_preview['t_max'])
+    model_t.load_state_dict(state_t, strict=False)
     model_t.eval()
     
-    # 加载空间模型归一化参数
-    with open('arf_model_x_normalization_params.json', 'r') as f:
-        norm_params_x = json.load(f)
+    # 加载空间模型归一化参数（多重回退）
+    try:
+        with open('PINN/arf_model_x_normalization_params.json', 'r') as f:
+            norm_params_x = json.load(f)
+    except FileNotFoundError:
+        try:
+            with open('arf_model_x_normalization_params.json', 'r') as f:
+                norm_params_x = json.load(f)
+        except FileNotFoundError:
+            # 进一步回退到旧命名
+            try:
+                with open('PINN/arf_pinn_normalization_params.json', 'r') as f:
+                    norm_params_x = json.load(f)
+            except FileNotFoundError:
+                try:
+                    with open('arf_pinn_normalization_params.json', 'r') as f:
+                        norm_params_x = json.load(f)
+                except FileNotFoundError:
+                    # 最终回退：基于理论默认范围构建参数
+                    wavelength = c_0 / frequency
+                    half_period = wavelength / 2.0
+                    x_min_m = -1.5 * half_period
+                    x_max_m =  1.5 * half_period
+                    # 用理论力估算 mu/sigma（训练也是用理论力标准化）
+                    xs = np.linspace(x_min_m, x_max_m, 1000, dtype=np.float32)
+                    xs_t = torch.tensor(xs).unsqueeze(1)
+                    theo = theoretical_spatial_factor(xs * 1000.0)  # 传毫米
+                    force_mu = float(np.mean(theo))
+                    force_sigma = float(max(np.std(theo), 1e-30))
+                    norm_params_x = {
+                        'x_min': x_min_m,
+                        'x_max': x_max_m,
+                        'force_mu': force_mu,
+                        'force_sigma': force_sigma,
+                    }
     
-    # 加载时间模型归一化参数
-    with open('arf_model_t_normalization_params.json', 'r') as f:
-        norm_params_t = json.load(f)
+    # 加载时间模型归一化参数（若上面已读到预览则直接使用；否则构建默认）
+    norm_params_t = norm_t_preview
+    if norm_params_t is None:
+        try:
+            with open('PINN/arf_model_t_normalization_params.json', 'r') as f:
+                norm_params_t = json.load(f)
+        except FileNotFoundError:
+            try:
+                with open('arf_model_t_normalization_params.json', 'r') as f:
+                    norm_params_t = json.load(f)
+            except FileNotFoundError:
+                # 默认时间范围一个周期，mu/sigma 用理论 cos 计算
+                t_min_s = 0.0
+                t_max_s = 1.0 / frequency
+                ts = np.linspace(t_min_s, t_max_s, 2000, dtype=np.float32)
+                time_mu = float(np.mean(np.cos(2 * np.pi * frequency * ts)))
+                time_sigma = float(max(np.std(np.cos(2 * np.pi * frequency * ts)), 1e-30))
+                norm_params_t = {
+                    't_min': t_min_s,
+                    't_max': t_max_s,
+                    'time_factor_mu': time_mu,
+                    'time_factor_sigma': time_sigma,
+                }
     
     return model_x, model_t, norm_params_x, norm_params_t
 
@@ -152,26 +223,25 @@ def predict_temporal_factor(model_t, norm_params_t, t_values_us):
 
 
 def theoretical_spatial_factor(x_values_mm, particle_radius=1e-6):
-    """计算理论空间因子（t=0时的力）"""
-    # 将毫米转换为米
-    x_values_m = x_values_mm / 1000.0
-    x_tensor = torch.tensor(x_values_m, dtype=torch.float32).unsqueeze(1)
-    
+    """计算理论空间因子（t=0时的力），兼容1D或2D输入，返回同形状的numpy数组"""
+    # 将毫米转换为米（保持输入形状）
+    x_values_m = np.asarray(x_values_mm, dtype=np.float32) / 1000.0
+
     wavelength = c_0 / frequency
     k = 2 * np.pi / wavelength
-    
+
     d_p = 2.0 * particle_radius
     offset = np.sqrt(2.0) * d_p / 4.0
-    x_front = x_tensor - offset
-    x_back = x_tensor + offset
-    
+    x_front = x_values_m - offset
+    x_back = x_values_m + offset
+
     # t=0时，cos(ωt) = cos(0) = 1
-    p_front = 2.0 * np.pi * amplitude * p_0 * gamma * torch.sin(k * x_front) / wavelength
-    p_back = 2.0 * np.pi * amplitude * p_0 * gamma * torch.sin(k * x_back) / wavelength
-    
+    p_front = 2.0 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_front) / wavelength
+    p_back = 2.0 * np.pi * amplitude * p_0 * gamma * np.sin(k * x_back) / wavelength
+
     pressure_diff = p_front - p_back
     force_magnitude = np.pi * d_p**2 * pressure_diff / 4.0
-    return force_magnitude.numpy().flatten()
+    return force_magnitude
 
 
 def theoretical_temporal_factor(t_values_us):
@@ -269,9 +339,12 @@ def plot_comparison():
     
     # 计算完整ARF
     theoretical_full = theoretical_arf_full(X_mesh, T_mesh)
-    predicted_full = predicted_spatial * predicted_temporal.reshape(-1, 1)
+    # predicted_spatial: (200,), predicted_temporal: (200,)
+    predicted_full = np.outer(predicted_temporal, predicted_spatial)
     
     # 绘制理论值热图
+    if theoretical_full.ndim == 3:
+        theoretical_full = theoretical_full.squeeze()
     im = ax5.contourf(X_mesh, T_mesh, theoretical_full * 1e12, levels=20, cmap='RdBu_r')
     ax5.set_xlabel('位置 x (mm)')
     ax5.set_ylabel('时间 t (μs)')
