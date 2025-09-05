@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import json
-import matplotlib.pyplot as plt
 
 # 兼容导入 ARF.py 中的常量与解析函数
 try:
@@ -18,6 +17,11 @@ except Exception:
 class Normalizer:
     """
     轻量级归一化器，供 main.py 安全导入使用。
+    - transform: 对已知键按均值/方差标准化，否则原样返回
+    - inverse: 对已知键反标准化，否则原样返回
+    - load: 兼容两类JSON：
+        1) 旧款: {'x_mean':..., 'x_std':..., 'fx_mean':..., ...}
+        2) 精简: {'force_mu':..., 'force_sigma':...}
     """
     def __init__(self):
         self.stats = {}
@@ -26,9 +30,9 @@ class Normalizer:
         with open(path, 'r') as f:
             data = json.load(f)
         # 兼容两种格式
-        if 't_mean' in data:
+        if 'x_mean' in data:
             # 全量均值方差
-            for k in ['t', 'time_factor']:
+            for k in ['x','y','t','r','fx','fy']:
                 mean_key = f'{k}_mean'
                 std_key = f'{k}_std'
                 if mean_key in data and std_key in data:
@@ -37,11 +41,11 @@ class Normalizer:
                         torch.tensor(max(float(data[std_key]), 1e-30), device=device, dtype=torch.float32)
                     )
         else:
-            # 仅时间因子的均值方差
-            if 'time_factor_mu' in data and 'time_factor_sigma' in data:
-                mu = torch.tensor(float(data['time_factor_mu']), device=device, dtype=torch.float32)
-                sigma = torch.tensor(max(float(data['time_factor_sigma']), 1e-30), device=device, dtype=torch.float32)
-                self.stats['time_factor'] = (mu, sigma)
+            # 仅力的均值方差（单输出模型时也可使用）
+            if 'force_mu' in data and 'force_sigma' in data:
+                mu = torch.tensor(float(data['force_mu']), device=device, dtype=torch.float32)
+                sigma = torch.tensor(max(float(data['force_sigma']), 1e-30), device=device, dtype=torch.float32)
+                self.stats['fx'] = (mu, sigma)
 
     def transform(self, data_dict):
         out = {}
@@ -66,22 +70,19 @@ class Normalizer:
 
 class ARFNetT(nn.Module):
     """
-    时间因子网络：输入 [t]，输出 [时间因子]
-    使用傅里叶特征来更好地捕捉声波的时间周期性特征
+    周期性感知的MLP：输入归一化时间 t_norm∈[0,1]，内部转换为物理时间秒，再生成 sin/cos(ω t)
     """
-    def __init__(self, fourier_features=32):
+    def __init__(self, period_seconds: float):
         super().__init__()
-        self.fourier_features = fourier_features
-        
-        # 计算角频率用于傅里叶特征
-        omega = 2 * np.pi * frequency  # 约 2.51e6 rad/s
-        
-        # 傅里叶特征权重（多个频率分量）
-        self.register_buffer('fourier_weights', torch.randn(1, fourier_features) * omega)
-        
-        # 主网络（与空间模型保持一致）
+        # 固定物理基频，避免频率漂移
+        omega = 2 * np.pi * frequency
+        self.register_buffer('omega', torch.tensor(omega, dtype=torch.float32))
+        # 保存周期（秒）用于把 t_norm 映射回物理时间
+        self.register_buffer('period_seconds', torch.tensor(period_seconds, dtype=torch.float32))
+
+        # 主网络（保持与 x 模型容量一致）
         self.layers = nn.Sequential(
-            nn.Linear(fourier_features * 2, 256),  # sin和cos特征
+            nn.Linear(2, 256),  # 仅一对 sin/cos 特征
             nn.Tanh(),
             nn.Linear(256, 256),
             nn.Tanh(),
@@ -92,60 +93,59 @@ class ARFNetT(nn.Module):
             nn.Linear(64, 1)
         )
 
-    def forward(self, t):
-        # 生成傅里叶特征
-        fourier_t = self.fourier_weights * t
-        fourier_features = torch.cat([torch.sin(fourier_t), torch.cos(fourier_t)], dim=1)
-        
-        # 通过主网络
+    def forward(self, t_norm):
+        # 将归一化时间映射回物理时间(秒)
+        t_seconds = t_norm * self.period_seconds
+        phase = self.omega * t_seconds
+        fourier_features = torch.cat([torch.sin(phase), torch.cos(phase)], dim=1)
         return self.layers(fourier_features)
 
 
 def theoretical_time_factor(t):
     """
-    计算理论时间因子：cos(ωt)
-    其中 ω = 2πf，f 是声波频率
+    理论时间因子：cos(ω t)
     """
     omega = 2 * np.pi * frequency
     return torch.cos(omega * t)
 
 
 def main():
+    import matplotlib.pyplot as plt
+    from torch.utils.data import DataLoader, TensorDataset
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("基于 ARF 解析公式的 PINN 训练（时间因子）…")
     print(f"device: {device}")
 
-    # 数据生成（仅使用时间t）
-    # 仅覆盖一个声波周期
-    period = 1.0 / frequency  # 声波周期
-    t_range = period  # 仅覆盖1个周期
+    # 数据生成（仅时间），覆盖一个周期
+    period = 1.0 / frequency
+    t_range = period
     
-    N = 20000  # 增加数据量，与空间模型一致
+    N = 20000
     t = (torch.rand(N, 1, device=device) * t_range).float()  # [0, T]
-    
-    # 理论时间因子
-    time_factor_theory = theoretical_time_factor(t).detach()
+
+    F_time = theoretical_time_factor(t).detach()
 
     # 特征缩放（仅输入t）
     t_min, t_max = 0.0, t_range
     t_scaled = (t - t_min) / (t_max - t_min)
     T_theory = t_scaled
 
-    # 时间因子归一化
-    time_factor_mu = time_factor_theory.mean()
-    time_factor_sigma = time_factor_theory.std().clamp_min(1e-30)
-    Y_theory = (time_factor_theory - time_factor_mu) / time_factor_sigma
+    # 归一化到零均值单位方差
+    time_factor_mu = F_time.mean()
+    time_factor_sigma = F_time.std().clamp_min(1e-30)
+    Y_theory = (F_time - time_factor_mu) / time_factor_sigma
 
-    # 模型/优化器（与空间模型保持一致）
-    model = ARFNetT(fourier_features=32).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=5e-4)  # 降低学习率，与空间模型一致
+    # 模型/优化器
+    model = ARFNetT(period_seconds=period).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = nn.MSELoss()
     
-    # 学习率调度器（与空间模型一致）
+    # 学习率调度器
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000)
 
     # 训练直到达到目标损失
-    target_loss = 1e-2  # 与空间模型一致的目标
+    target_loss = 1e-5
     print_interval = 500
     epoch = 0
     losses = []
@@ -153,11 +153,7 @@ def main():
     print("开始训练… 目标损失:", target_loss)
     print("使用傅里叶特征增强时间周期性学习能力")
     print(f"采样范围: [{t_min:.2e}, {t_max:.2e}] s")
-    print(f"包含周期数: {t_range/period:.1f} 个声波周期")
-    print(f"声波频率: {frequency:.1e} Hz")
-    print(f"声波周期: {period:.2e} s")
-    print(f"训练时间范围: [0, {period*1e6:.1f}] μs")
-    
+    print(f"包含周期数: {t_range/period:.1f} 个周期")
     while True:
         model.train()
         optimizer.zero_grad()
@@ -165,7 +161,7 @@ def main():
         loss = criterion(pred, Y_theory)
         loss.backward()
         optimizer.step()
-        scheduler.step(loss.item())  # 学习率调度，与空间模型一致
+        scheduler.step(loss.item())  # 学习率调度
         losses.append(loss.item())
 
         if epoch % print_interval == 0 or loss.item() < target_loss:
@@ -176,28 +172,28 @@ def main():
             break
         epoch += 1
 
-    # 可视化训练损失（与空间模型保持一致）
+    # 可视化
     plt.figure(figsize=(10, 5))
     plt.plot(losses)
     plt.yscale('log')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss (Time Factor)')
+    plt.title('Training Loss')
     plt.grid(True)
     plt.show()
     
-    # 详细测试和可视化
+    # 详细测试
     model.eval()
     with torch.no_grad():
-        # 更密集的测试点，覆盖完整范围
+        # 更密集的测试点，覆盖一个周期
         test_t = torch.linspace(0, t_range, 1000, device=device).unsqueeze(1)
         test_inp = (test_t - t_min) / (t_max - t_min)
         pred_norm = model(test_inp)
-        pred_time_factor = pred_norm * time_factor_sigma + time_factor_mu
-        true_time_factor = theoretical_time_factor(test_t)
+        pred_time = pred_norm * time_factor_sigma + time_factor_mu
+        true_time = theoretical_time_factor(test_t)
         
         # 计算整体误差统计
-        relative_errors = torch.abs(pred_time_factor - true_time_factor) / (torch.abs(true_time_factor) + 1e-30)
+        relative_errors = torch.abs(pred_time - true_time) / (torch.abs(true_time) + 1e-30)
         mean_error = torch.mean(relative_errors).item()
         max_error = torch.max(relative_errors).item()
         
@@ -205,31 +201,22 @@ def main():
         print(f"平均相对误差: {mean_error*100:.2f}%")
         print(f"最大相对误差: {max_error*100:.2f}%")
         
-        # 绘制ARF与时间的关系
-        test_t_np = test_t.cpu().numpy().flatten()
-        pred_factor_np = pred_time_factor.cpu().numpy().flatten()
-        true_factor_np = true_time_factor.cpu().numpy().flatten()
-        
-        plt.figure(figsize=(10, 5))
-        plt.plot(test_t_np * 1e6, true_factor_np, 'b-', label='理论值', linewidth=2)
-        plt.plot(test_t_np * 1e6, pred_factor_np, 'r--', label='PINN预测', linewidth=1.5)
+        # 绘制时间因子曲线
+        import matplotlib.pyplot as plt
+        tt = (test_t * 1e6).detach().cpu().numpy().flatten()
+        pred_np = pred_time.detach().cpu().numpy().flatten()
+        true_np = true_time.detach().cpu().numpy().flatten()
+        plt.figure(figsize=(10,5))
+        plt.plot(tt, true_np, 'b-', label='理论值', linewidth=2)
+        plt.plot(tt, pred_np, 'r--', label='PINN预测', linewidth=1.5)
         plt.xlabel('时间 (μs)')
         plt.ylabel('时间因子 cos(ωt)')
-        plt.title('ARF时间因子 vs 时间')
-        plt.legend()
+        plt.title('ARF 时间因子 vs 时间')
         plt.grid(True, alpha=0.3)
-        
-        # 添加周期标记（仅标记一个周期内的关键点）
-        key_times = [0, period/4, period/2, 3*period/4, period]
-        for i, t_val in enumerate(key_times):
-            t_us = t_val * 1e6
-            plt.axvline(t_us, color='gray', linestyle=':', alpha=0.5)
-            labels = ['0', 'T/4', 'T/2', '3T/4', 'T']
-            plt.text(t_us, 0.8, labels[i], ha='center', fontsize=8)
-        
+        plt.legend()
         plt.tight_layout()
         plt.show()
-    
+
     # 保存模型与归一化参数
     torch.save(model.state_dict(), 'arf_model_t.pth')
     with open('arf_model_t_normalization_params.json', 'w') as f:
@@ -239,21 +226,6 @@ def main():
             'time_factor_sigma': float(time_factor_sigma.item())
         }, f)
     print("时间因子模型和归一化参数已保存。")
-    
-    # 打印一些关键时间点的值
-    print("\n=== 关键时间点验证 ===")
-    print("时间(μs) | 理论值 | PINN预测 | 相对误差")
-    print("-" * 50)
-    key_times = [0, period/4, period/2, 3*period/4, period]
-    labels = ['0', 'T/4', 'T/2', '3T/4', 'T']
-    for i, t_val in enumerate(key_times):
-        t_tensor = torch.tensor([[t_val]], device=device)
-        t_scaled = (t_tensor - t_min) / (t_max - t_min)
-        pred_norm = model(t_scaled)
-        pred_val = pred_norm * time_factor_sigma + time_factor_mu
-        true_val = theoretical_time_factor(t_tensor)
-        rel_err = abs(pred_val.item() - true_val.item()) / (abs(true_val.item()) + 1e-30)
-        print(f"{t_val*1e6:8.1f} | {true_val.item():7.4f} | {pred_val.item():9.4f} | {rel_err:8.1%}")
 
 
 if __name__ == "__main__":
