@@ -9,27 +9,23 @@ import os
 import torch
 import json
 
-# 配置开关 - 使用PINN模型进行力预测，同时开启斯托克斯阻力
+# 配置开关 - 只使用位置PINN模型进行力预测
 USE_TRAVELING_WAVE = False
-USE_TEST_PARTICLE = False
-USE_PINN_FORCES = True  # 使用PINN模型预测所有粒子受力
+USE_PINN_X_FORCES = True  # 使用位置PINN模型预测粒子受力
 USE_GRAVITY = False
-USE_STOKES_DRAG = True  # 开启斯托克斯阻力
+USE_STOKES_DRAG = False
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
-USE_ACOUSTIC_WAKE = False  # 关闭，由PINN模型处理
-USE_COLLISION = False  # 关闭碰撞处理
+USE_ACOUSTIC_WAKE = False
+USE_COLLISION = False
 
 # 调试打印配置
 TARGET_PARTICLE_INDEX = 0  # 要监控的粒子索引
-
 
 # 仿真时间累计变量
 simulation_time = 0.0  # 累计仿真时间
 density_plot_saved = False  # 标记是否已经保存过密度图
 last_save_time = 0.0  # 记录上次保存图片的时间
-
-
 
 # 导入声场计算（仅用于可视化）
 if USE_TRAVELING_WAVE:
@@ -39,45 +35,33 @@ else:
     from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
     IS_STANDING_WAVE = True
 
-# 导入PINN模型
+# 导入位置PINN模型
 from mechanisms.ARF_PINN_x import ARFNet as ARFNetX, Normalizer as NormalizerX
-from mechanisms.ARF_PINN_t import ARFNetT as ARFNetT, Normalizer as NormalizerT
 
-# 导入斯托克斯阻力模块
-from mechanisms.Stokes_drag import apply_stokes_drag
-
-def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, time, x_model, x_normalizer, t_model, t_normalizer, print_forces=False):
+def compute_particle_forces_using_x_pinn(positions, velocities, mass, radii, dt, time, x_model, x_normalizer, print_forces=False):
     """
-    使用训练好的PINN模型计算粒子受力
-    - x_model: 位置相关的力模型 (ARFNet)
-    - t_model: 时间相关的力模型 (ARFNetT)
+    使用训练好的位置PINN模型计算粒子受力
+    - x_model: 位置相关的力模型 (ARFNetX)
     - print_forces: 是否打印力信息
     """
-    if x_model is None or x_normalizer is None or t_model is None or t_normalizer is None:
-        print("PINN模型未完全初始化，无法计算力")
+    if x_model is None or x_normalizer is None:
+        print("位置PINN模型未完全初始化，无法计算力")
         return positions, velocities, None
     
     try:
         with torch.no_grad():
-            # 准备输入数据
+            # 准备输入数据 - 使用实际x位置，固定t=0
             x = torch.tensor(positions[:, 0], dtype=torch.float32)
             y = torch.tensor(positions[:, 1], dtype=torch.float32)
-            t = torch.full_like(x, time, dtype=torch.float32)
+            t = torch.zeros_like(x)  # 固定t=0
             
-            # 将x坐标中心化到通道中点，再按训练范围归一化
+            # 将坐标中心化到通道中点，再按训练范围归一化
             x_centered = x - (domain_size[0] / 2.0)
             x_norm = (x_centered - X_MIN) / (X_MAX - X_MIN)
             x_norm = torch.clamp(x_norm, 0.0, 1.0)
             
-            # 归一化时间用于t模型
-            t_min, t_max = 0.0, 0.0001  # 从归一化参数文件获取
-            t_norm = (t - t_min) / (t_max - t_min)
-            
             # 使用x模型预测位置相关的力（归一化后的值）
             fx_spatial_norm = x_model(x_norm.unsqueeze(1))
-            
-            # 使用t模型预测时间因子（归一化后的值）
-            time_factor_norm = t_model(t_norm.unsqueeze(1))
             
             # 反归一化x模型的输出
             if x_normalizer is not None and 'fx' in x_normalizer.stats:
@@ -87,18 +71,11 @@ def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, t
                 # 如果没有归一化器，使用加载/默认的反归一化参数
                 fx_spatial = fx_spatial_norm * FORCE_SIGMA + FORCE_MU
             
-            # 反归一化t模型的输出
-            if t_normalizer is not None and 'fx' in t_normalizer.stats:
-                tf_mu, tf_sigma = t_normalizer.stats['fx']
-                time_factor = time_factor_norm * tf_sigma + tf_mu
-            else:
-                # 如果没有归一化器，使用默认的反归一化参数
-                time_factor_mu = -0.0006397787947207689
-                time_factor_sigma = 0.7075421214103699
-                time_factor = time_factor_norm * time_factor_sigma + time_factor_mu
+            # 由于固定t=0，时间因子为1（cos(0) = 1）
+            time_factor = 1.0
             
-            # 组合得到最终的力：F = F_spatial * F_temporal
-            fx = fx_spatial.squeeze() * time_factor.squeeze()
+            # 组合得到最终的力：F = F_spatial * F_temporal (t=0时F_temporal=1)
+            fx = fx_spatial.squeeze() * time_factor
             fy = torch.zeros_like(fx)  # 假设只有x方向的力
             
             # 转换为numpy数组
@@ -107,15 +84,16 @@ def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, t
             
             # 打印力信息（如果需要）
             if print_forces:
-                print(f"\n=== 时间步 {time:.6f}s 的粒子压力梯度力 ===")
-                print("粒子ID | X位置(mm) | Y位置(mm) | 压力梯度力Fx(pN) | 压力梯度力Fy(pN)")
-                print("-" * 70)
+                print(f"\n=== 时间步 {time:.6f}s 的粒子位置相关力 ===")
+                print("粒子ID | X位置(mm) | Y位置(mm) | 位置相关力Fx(pN) | 位置相关力Fy(pN)")
+                print("-" * 80)
                 for i in range(len(positions)):
                     print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {fx[i]*1e12:15.3e} | {fy[i]*1e12:15.3e}")
                 print(f"总粒子数: {len(positions)}")
+                print(f"时间因子 (t=0): {time_factor:.4f}")
                 print(f"平均力Fx: {np.mean(fx)*1e12:.3e} pN")
                 print(f"力Fx范围: [{np.min(fx)*1e12:.3e}, {np.max(fx)*1e12:.3e}] pN")
-                print("=" * 70)
+                print("=" * 80)
             
             # 计算加速度
             accelerations = np.column_stack([fx, fy]) / mass[:, None]
@@ -127,11 +105,10 @@ def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, t
             return positions, velocities, (fx, fy)
             
     except Exception as e:
-        print(f"PINN模型计算力时出错: {e}")
+        print(f"位置PINN模型计算力时出错: {e}")
         print("将使用零力（无外力效应）")
         # 如果PINN计算失败，不施加任何力，保持原有运动
         return positions, velocities, None
-# 移除所有力学计算模块的导入，现在只使用PINN模型
 
 # 性能监控变量
 performance_data = {
@@ -167,16 +144,14 @@ def update_performance_data():
 performance_thread = threading.Thread(target=update_performance_data, daemon=True)
 performance_thread.start()
 
-
-
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=100, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=50, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
-# 初始化PINN模型
-print("正在加载训练好的PINN模型...")
+# 初始化位置PINN模型
+print("正在加载训练好的位置PINN模型...")
 try:
     # 初始化x模型（位置相关）
     x_model = ARFNetX(fourier_features=32)
@@ -188,27 +163,15 @@ try:
         print(f"警告: x模型文件 {x_model_path} 不存在")
         x_model = None
     
-    # 初始化t模型（时间相关）
-    t_model = ARFNetT(period_seconds=1.0 / frequency)
-    t_model_path = 'PINN/arf_model_t.pth'
-    if os.path.exists(t_model_path):
-        t_model.load_state_dict(torch.load(t_model_path, map_location='cpu'))
-        print(f"成功加载t模型权重: {t_model_path}")
-    else:
-        print(f"警告: t模型文件 {t_model_path} 不存在")
-        t_model = None
-    
-    # 加载归一化参数（x模型使用PINN/arf_model_x_normalization_params.json）
+    # 加载归一化参数
     x_norm_path = 'PINN/arf_model_x_normalization_params.json'
-    t_norm_path = 'arf_model_t_normalization_params.json'
     
     x_normalizer = None
-    # 默认值（当文件缺失或读取失败时使用）
+    # 默认参数（若文件缺失时使用）
     X_MIN = -0.0255
     X_MAX = 0.0255
     FORCE_MU = 4.5863430241099845e-12
     FORCE_SIGMA = 1.4498783250382896e-11
-    t_normalizer = None
     
     if os.path.exists(x_norm_path):
         x_normalizer = NormalizerX()
@@ -228,38 +191,35 @@ try:
         except Exception as _e:
             print(f"读取x归一化参数文件时出错: {_e}，使用默认参数")
     
-    if os.path.exists(t_norm_path):
-        t_normalizer = NormalizerT()
-        t_normalizer.load(t_norm_path, device='cpu')
-        print(f"成功加载t模型归一化参数: {t_norm_path}")
-    
     # 设置为评估模式
     if x_model is not None:
         x_model.eval()
-    if t_model is not None:
-        t_model.eval()
     
-    print("PINN模型初始化完成")
+    print("位置PINN模型初始化完成")
     
 except Exception as e:
-    print(f"PINN模型初始化失败: {e}")
+    print(f"位置PINN模型初始化失败: {e}")
     print("将无法进行粒子力预测")
     x_model = None
-    t_model = None
     x_normalizer = None
-    t_normalizer = None
 
-# 移除测试粒子相关代码，专注于PINN模型预测
-
-# 绘图初始化 - 创建两个子图
-fig, (ax_particles, ax_density) = plt.subplots(1, 2, figsize=(16, 6))
+# 绘图初始化 - 创建三个子图
+fig, (ax_particles, ax_force_profile, ax_density) = plt.subplots(1, 3, figsize=(20, 6))
 
 # 左侧子图：粒子运动
 ax_particles.set_xlim(0, domain_size[0] * 1000)
 ax_particles.set_ylim(0, domain_size[1] * 1000)
-ax_particles.set_title("Particle Motion")
+ax_particles.set_title("Particle Motion (Position-based Forces)")
 ax_particles.set_xlabel("x (mm)")
 ax_particles.set_ylabel("y (mm)")
+
+# 中间子图：位置相关力分布曲线
+ax_force_profile.set_xlim(-domain_size[0] * 1000/2, domain_size[0] * 1000/2)  # x位置范围
+ax_force_profile.set_ylim(-50, 50)  # 力值范围 (pN)
+ax_force_profile.set_title("Force Profile vs Position (t=0)")
+ax_force_profile.set_xlabel("Position x (mm)")
+ax_force_profile.set_ylabel("Force Fx (pN)")
+ax_force_profile.grid(True, alpha=0.3)
 
 # 右侧子图：密度变化曲线
 ax_density.set_xlim(0, domain_size[0] * 1000)
@@ -268,8 +228,6 @@ ax_density.set_title("Particle Density Distribution")
 ax_density.set_xlabel("x (mm)")
 ax_density.set_ylabel("Relative Change (%)")
 ax_density.grid(True, alpha=0.3)
-
-# 移除测试粒子图例
 
 # 声场
 X, Y, P = compute_sound_field(domain_size=domain_size, resolution=(200, 200), time=0.0)
@@ -289,12 +247,16 @@ scatter = ax_particles.scatter(positions[:, 0] * 1000,
                      s=(radii * 1e6 * 4)**2,
                      c='blue', alpha=0.6)
 
-# 移除测试粒子和尾流箭头相关代码
-
 # 添加性能信息文本框
 performance_text = ax_particles.text(0.02, 0.98, '', transform=ax_particles.transAxes, 
                           verticalalignment='top', fontsize=10,
                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+# 初始化力分布曲线
+x_positions = np.linspace(-domain_size[0]/2, domain_size[0]/2, 200)  # 位置范围
+force_profile = np.zeros_like(x_positions)  # 力分布
+force_line, = ax_force_profile.plot(x_positions * 1000, force_profile, 'r-', linewidth=2, label='Force Profile')
+ax_force_profile.legend()
 
 # 初始化密度分布曲线（使用核密度估计获得平滑曲线）
 # 创建x坐标网格（单位：mm）
@@ -321,14 +283,12 @@ initial_relative = (initial_density - baseline) / baseline * 100.0
 density_line, = ax_density.plot(x_grid, initial_relative, 'b-', linewidth=2, label='Relative change')
 ax_density.legend()
 
-
-
 # 帧率计算变量
 frame_times = []
 last_frame_time = time.time()
 
 def update(frame):
-    global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved, last_save_time, initial_positions
+    global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved, last_save_time, initial_positions, x_positions, force_profile, x_grid, baseline
 
     # 计算帧率
     current_time = time.time()
@@ -356,33 +316,51 @@ def update(frame):
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
 
-    # 使用PINN模型计算粒子受力
-    if USE_PINN_FORCES:
-        if x_model is not None and t_model is not None:
-            # 使用训练好的PINN模型计算粒子受力
-            if frame % 100 == 0:  # 每100帧打印一次状态和力信息
-                print(f"使用PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
-                positions, velocities, forces = compute_particle_forces_using_pinn(
-                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=True
+    # 使用位置PINN模型计算粒子受力
+    if USE_PINN_X_FORCES:
+        if x_model is not None:
+            # 使用训练好的位置PINN模型计算粒子受力
+            if frame % 10000 == 0:  # 每10000帧打印一次状态和力信息
+                print(f"使用位置PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
+                positions, velocities, forces = compute_particle_forces_using_x_pinn(
+                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, print_forces=True
                 )
             else:
-                positions, velocities, forces = compute_particle_forces_using_pinn(
-                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
+                positions, velocities, forces = compute_particle_forces_using_x_pinn(
+                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, print_forces=False
                 )
+            
+            # 计算力分布用于绘图
+            if forces is not None and frame % 100 == 0:  # 每100帧更新一次力分布
+                # x_positions 已以通道中心为0，直接用训练范围归一化
+                x_norm_vals = (x_positions - X_MIN) / (X_MAX - X_MIN)
+                x_norm_vals = np.clip(x_norm_vals, 0.0, 1.0)
+                x_tensor = torch.tensor(x_norm_vals, dtype=torch.float32).unsqueeze(1)
+                with torch.no_grad():
+                    fx_spatial_norm = x_model(x_tensor)
+                    force_profile = (fx_spatial_norm.squeeze() * FORCE_SIGMA + FORCE_MU).numpy() * 1e12  # 转换为pN
         else:
-            if frame % 100 == 0:  # 每100帧打印一次状态
-                print("警告: PINN模型未完全初始化，跳过力计算")
+            if frame % 10000 == 0:  # 每10000帧打印一次状态
+                print("警告: 位置PINN模型未完全初始化，跳过力计算")
             # 不施加任何力，保持原有运动
-    
-    # 应用斯托克斯阻力
-    if USE_STOKES_DRAG:
-        positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
 
     # 更新声场 & 粒子位置
     Nx, Ny = (200, 200)
     _, _, P = compute_sound_field(domain_size=domain_size, resolution=(Nx, Ny), time=t)
     sound_img.set_data(P)
     scatter.set_offsets(positions * 1000)
+    
+    # 更新力分布曲线
+    force_line.set_data(x_positions * 1000, force_profile)
+    
+    # 动态调整y轴范围
+    if len(force_profile) > 0:
+        y_min = np.min(force_profile)
+        y_max = np.max(force_profile)
+        y_margin = (y_max - y_min) * 0.1 if y_max != y_min else 1.0
+        ax_force_profile.set_ylim(y_min - y_margin, y_max + y_margin)
+    
+    ax_force_profile.set_title(f"Force Profile vs Position (t = {t:.6f} s)")
     
     # 更新密度分布曲线（使用核密度估计）
     current_x_positions = positions[:, 0] * 1000.0
@@ -398,40 +376,17 @@ def update(frame):
     
     ax_density.set_title(f"Particle Density Distribution (t = {t:.6f} s)")
 
-
-    
-        # 每0.01s保存一次密度分布图，从0.01s到0.2s
-    if t >= 0.01 and t <= 0.2 and (t - last_save_time) >= 0.01:
-        # 创建密度分布图
-        plt.figure(figsize=(12, 8))
-        plt.plot(x_grid, relative_change, 'b-', linewidth=2, label='Relative Change (%)')
-        plt.xlabel('x (mm)')
-        plt.ylabel('Relative Change (%)')
-        plt.title(f'Particle Density Distribution at t = {t:.6f} s')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        
-        # 保存图片，文件名包含时间信息
-        filename = f'density_plot_{int(t*1000):03d}_t_{t:.6f}s.png'
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        last_save_time = t  # 更新上次保存时间
-
     # 更新性能信息显示
-    pinn_status = "✓ PINN Active" if (x_model is not None and t_model is not None) else "✗ PINN Inactive"
-    stokes_status = "✓ Stokes Drag Active" if USE_STOKES_DRAG else "✗ Stokes Drag Inactive"
+    pinn_status = "✓ Position PINN Active" if x_model is not None else "✗ Position PINN Inactive"
     performance_text.set_text(
         f'Simulation Time: {t:.6f} s\n'
         f'FPS: {performance_data["fps"]:.1f}\n'
         f'Frame Time: {performance_data["frame_time"]:.1f}ms\n'
         f'Particles: {performance_data["particle_count"]}\n'
-        f'PINN Models: {pinn_status}\n'
-        f'Stokes Drag: {stokes_status}'
+        f'Position Model: {pinn_status}'
     )
     
-    return sound_img, scatter, performance_text, density_line
-
+    return sound_img, scatter, performance_text, force_line, density_line
 
 ani = animation.FuncAnimation(fig, update, frames=20000, interval=0, blit=False)
 plt.show()
