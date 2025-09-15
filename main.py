@@ -14,7 +14,7 @@ USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
 USE_PINN_FORCES = True  # 使用PINN模型预测所有粒子受力
 USE_GRAVITY = False
-USE_STOKES_DRAG = True  # 开启斯托克斯阻力
+USE_STOKES_DRAG = False  # 开启斯托克斯阻力
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
 USE_ACOUSTIC_WAKE = False  # 关闭，由PINN模型处理
@@ -193,7 +193,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=100, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -373,7 +373,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 2.5e-6
+    dt = 1e-6
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -385,7 +385,7 @@ def update(frame):
             if frame % 100 == 0:  # 每100帧打印一次状态和力信息
                 print(f"使用PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
                 positions, velocities, forces = compute_particle_forces_using_pinn(
-                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=True
+                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
                 )
             else:
                 positions, velocities, forces = compute_particle_forces_using_pinn(
