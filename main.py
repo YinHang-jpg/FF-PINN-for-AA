@@ -46,6 +46,26 @@ from mechanisms.ARF_PINN_t import ARFNetT as ARFNetT, Normalizer as NormalizerT
 # 导入斯托克斯阻力模块
 from mechanisms.Stokes_drag import apply_stokes_drag
 
+# 仅用于打印：根据当前速度计算每个粒子的斯托克斯阻力（与 mechanisms/Stokes_drag.py 一致）
+def _cunningham_correction_factor(d_p, lambda_g):
+    ratio = d_p / lambda_g
+    exp_term = np.exp(-0.550 * ratio)
+    bracket_term = 2.514 + 0.800 * exp_term
+    return 1.0 + bracket_term * ratio
+
+def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, fluid_velocity=None, lambda_g=6.5e-8):
+    N = len(positions)
+    if fluid_velocity is None:
+        fluid_velocity = np.zeros((N, 2))
+    drag_force = np.zeros_like(positions)
+    for i in range(N):
+        d_p = 2.0 * radii[i]
+        C_c = _cunningham_correction_factor(d_p, lambda_g)
+        relative_velocity = velocities[i] - fluid_velocity[i]
+        drag_coeff = 3.0 * np.pi * viscosity * d_p / C_c
+        drag_force[i] = -drag_coeff * relative_velocity
+    return drag_force
+
 def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, time, x_model, x_normalizer, t_model, t_normalizer, print_forces=False):
     """
     使用训练好的PINN模型计算粒子受力
@@ -107,15 +127,17 @@ def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, t
             
             # 打印力信息（如果需要）
             if print_forces:
-                print(f"\n=== 时间步 {time:.6f}s 的粒子压力梯度力 ===")
-                print("粒子ID | X位置(mm) | Y位置(mm) | 压力梯度力Fx(pN) | 压力梯度力Fy(pN)")
-                print("-" * 70)
+                stokes_force = compute_stokes_drag_force(positions, velocities, radii) if USE_STOKES_DRAG else np.zeros_like(positions)
+                print(f"\n=== 时间步 {time:.6f}s 的粒子受力 ===")
+                print("粒子ID | X位置(mm) | Y位置(mm) | PINN Fx(pN) | PINN Fy(pN) | Stokes Fx(pN) | Stokes Fy(pN)")
+                print("-" * 110)
                 for i in range(len(positions)):
-                    print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {fx[i]*1e12:15.3e} | {fy[i]*1e12:15.3e}")
+                    print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {fx[i]*1e12:12.3e} | {fy[i]*1e12:12.3e} | {stokes_force[i,0]*1e12:13.3e} | {stokes_force[i,1]*1e12:13.3e}")
                 print(f"总粒子数: {len(positions)}")
-                print(f"平均力Fx: {np.mean(fx)*1e12:.3e} pN")
-                print(f"力Fx范围: [{np.min(fx)*1e12:.3e}, {np.max(fx)*1e12:.3e}] pN")
-                print("=" * 70)
+                print(f"PINN 平均Fx: {np.mean(fx)*1e12:.3e} pN | 范围: [{np.min(fx)*1e12:.3e}, {np.max(fx)*1e12:.3e}] pN")
+                if USE_STOKES_DRAG:
+                    print(f"Stokes 平均Fx: {np.mean(stokes_force[:,0])*1e12:.3e} pN | 范围: [{np.min(stokes_force[:,0])*1e12:.3e}, {np.max(stokes_force[:,0])*1e12:.3e}] pN")
+                print("=" * 110)
             
             # 计算加速度
             accelerations = np.column_stack([fx, fy]) / mass[:, None]
@@ -351,7 +373,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-6
+    dt = 2.5e-6
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
