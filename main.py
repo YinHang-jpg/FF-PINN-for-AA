@@ -29,6 +29,9 @@ simulation_time = 0.0  # 累计仿真时间
 density_plot_saved = False  # 标记是否已经保存过密度图
 last_save_time = 0.0  # 记录上次保存图片的时间
 
+# 性能计时变量
+step_timing_printed = False  # 标记是否已打印过第5帧的计时信息
+
 
 
 # 导入声场计算（仅用于可视化）
@@ -204,7 +207,7 @@ try:
     x_model = ARFNetX(fourier_features=32)
     x_model_path = 'PINN/arf_model_x.pth'
     if os.path.exists(x_model_path):
-        x_model.load_state_dict(torch.load(x_model_path, map_location='cpu'))
+        x_model.load_state_dict(torch.load(x_model_path, map_location='cpu', weights_only=True))
         print(f"成功加载x模型权重: {x_model_path}")
     else:
         print(f"警告: x模型文件 {x_model_path} 不存在")
@@ -214,7 +217,7 @@ try:
     t_model = ARFNetT(period_seconds=1.0 / frequency)
     t_model_path = 'PINN/arf_model_t.pth'
     if os.path.exists(t_model_path):
-        t_model.load_state_dict(torch.load(t_model_path, map_location='cpu'))
+        t_model.load_state_dict(torch.load(t_model_path, map_location='cpu', weights_only=True))
         print(f"成功加载t模型权重: {t_model_path}")
     else:
         print(f"警告: t模型文件 {t_model_path} 不存在")
@@ -350,7 +353,11 @@ frame_times = []
 last_frame_time = time.time()
 
 def update(frame):
-    global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved, last_save_time, initial_positions
+    global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved, last_save_time, initial_positions, step_timing_printed
+
+    # 开始计时（第5帧时）
+    if frame == 5 and not step_timing_printed:
+        t0 = time.perf_counter()
 
     # 计算帧率
     current_time = time.time()
@@ -378,33 +385,54 @@ def update(frame):
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
 
+    # 计时：声场计算开始
+    if frame == 5 and not step_timing_printed:
+        t1 = time.perf_counter()
+
     # 使用PINN模型计算粒子受力
     if USE_PINN_FORCES:
         if x_model is not None and t_model is not None:
             # 使用训练好的PINN模型计算粒子受力
-            if frame % 100 == 0:  # 每100帧打印一次状态和力信息
-                print(f"使用PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
-                positions, velocities, forces = compute_particle_forces_using_pinn(
-                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=True
-                )
-            else:
-                positions, velocities, forces = compute_particle_forces_using_pinn(
-                    positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
-                )
+            # 暂时禁用打印机制
+            # if frame % 100 == 0:  # 每100帧打印一次状态和力信息
+            #     print(f"使用PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
+            #     positions, velocities, forces = compute_particle_forces_using_pinn(
+            #         positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=True
+            #     )
+            # else:
+            #     positions, velocities, forces = compute_particle_forces_using_pinn(
+            #         positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
+            #     )
+            positions, velocities, forces = compute_particle_forces_using_pinn(
+                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
+            )
         else:
-            if frame % 100 == 0:  # 每100帧打印一次状态
-                print("警告: PINN模型未完全初始化，跳过力计算")
-            # 不施加任何力，保持原有运动
+            # 暂时禁用警告打印
+            # if frame % 100 == 0:  # 每100帧打印一次状态
+            #     print("警告: PINN模型未完全初始化，跳过力计算")
+            pass  # 不施加任何力，保持原有运动
+    
+    # 计时：PINN计算结束，斯托克斯阻力开始
+    if frame == 5 and not step_timing_printed:
+        t2 = time.perf_counter()
     
     # 应用斯托克斯阻力
     if USE_STOKES_DRAG:
         positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
+    
+    # 计时：斯托克斯阻力结束，可视化更新开始
+    if frame == 5 and not step_timing_printed:
+        t3 = time.perf_counter()
 
     # 更新声场 & 粒子位置
     Nx, Ny = (200, 200)
     _, _, P = compute_sound_field(domain_size=domain_size, resolution=(Nx, Ny), time=t)
     sound_img.set_data(P)
     scatter.set_offsets(positions * 1000)
+    
+    # 计时：声场和散点图更新结束，密度计算开始
+    if frame == 5 and not step_timing_printed:
+        t4 = time.perf_counter()
     
     # 更新密度分布曲线（使用核密度估计）
     current_x_positions = positions[:, 0] * 1000.0
@@ -419,6 +447,10 @@ def update(frame):
     ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
     
     ax_density.set_title(f"Particle Density Distribution (t = {t:.6f} s)")
+    
+    # 计时：密度计算结束，性能显示开始
+    if frame == 5 and not step_timing_printed:
+        t5 = time.perf_counter()
 
 
     
@@ -451,6 +483,50 @@ def update(frame):
         f'PINN Models: {pinn_status}\n'
         f'Stokes Drag: {stokes_status}'
     )
+    
+    # 计时：性能显示结束
+    if frame == 5 and not step_timing_printed:
+        t6 = time.perf_counter()
+    
+    # 触发一次立即绘制并测量（仅在第5帧做一次）
+    if frame == 5 and not step_timing_printed:
+        pending_draw_measurement = {'draw_start': time.perf_counter(), 'draw_end': None}
+        fig.canvas.draw()
+        if pending_draw_measurement['draw_end'] is None:
+            # 后备：立刻取一次时间，包含渲染阻塞
+            pending_draw_measurement['draw_end'] = time.perf_counter()
+
+        def ms(x):
+            return max(0.0, x) * 1000.0
+
+        # 计算各阶段耗时（缺失时间戳用相邻前一刻兜底，避免未定义）
+        t1_l = locals().get('t1', t0)
+        t2_l = locals().get('t2', t1_l)
+        t3_l = locals().get('t3', t2_l)
+        t4_l = locals().get('t4', t3_l)
+        t5_l = locals().get('t5', t4_l)
+        t6_l = locals().get('t6', t5_l)
+
+        t_sound = ms(t1_l - t0)
+        t_arf = ms(t2_l - t1_l)
+        t_drag = ms(t3_l - t2_l)
+        t_scatter = ms(t4_l - t3_l)
+        t_density = ms(t5_l - t4_l)
+        t_perf = ms(t6_l - t5_l)
+        draw_ms = ms(pending_draw_measurement['draw_end'] - pending_draw_measurement['draw_start'])
+        total_ms = t_sound + t_arf + t_drag + t_scatter + t_density + t_perf + draw_ms
+
+        print("\nStep timing breakdown (frame 5):")
+        print(f"  Particles:          {len(positions)}")
+        print(f"  Sound field update: {t_sound:.2f} ms")
+        print(f"  PINN computation:   {t_arf:.2f} ms")
+        print(f"  Stokes drag:        {t_drag:.2f} ms")
+        print(f"  Scatter update:     {t_scatter:.2f} ms")
+        print(f"  Density calculation:{t_density:.2f} ms")
+        print(f"  Perf display:       {t_perf:.2f} ms")
+        print(f"  Render (draw):      {draw_ms:.2f} ms")
+        print(f"  Total (incl. draw): {total_ms:.2f} ms")
+        step_timing_printed = True
     
     return sound_img, scatter, performance_text, density_line
 
