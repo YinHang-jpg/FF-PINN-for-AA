@@ -10,16 +10,16 @@ import torch
 import json
 import sys
 
-# 配置开关 - 使用PINN模型进行力预测，同时开启斯托克斯阻力
+# 配置开关 - 使用ARF物理公式进行力预测，同时开启斯托克斯阻力
 RUN_HEADLESS_BENCHMARK = True  # 关闭渲染与动画，仅计算并在1000步后退出
 USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
-USE_PINN_FORCES = True  # 使用PINN模型预测所有粒子受力
+USE_ARF_FORCES = True  # 使用ARF物理公式计算所有粒子受力
 USE_GRAVITY = False
 USE_STOKES_DRAG = False  # 开启斯托克斯阻力
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
-USE_ACOUSTIC_WAKE = False  # 关闭，由PINN模型处理
+USE_ACOUSTIC_WAKE = False  # 关闭，由ARF物理公式处理
 USE_COLLISION = False  # 关闭碰撞处理
 
 # 调试打印配置
@@ -44,9 +44,8 @@ else:
     from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
     IS_STANDING_WAVE = True
 
-# 导入PINN模型
-from mechanisms.ARF_PINN_x import ARFNet as ARFNetX, Normalizer as NormalizerX
-from mechanisms.ARF_PINN_t import ARFNetT as ARFNetT, Normalizer as NormalizerT
+# 导入ARF物理公式计算模块
+from mechanisms.ARF import compute_pressure_gradient_and_apply_arf
 
 # 导入斯托克斯阻力模块
 from mechanisms.Stokes_drag import apply_stokes_drag
@@ -71,94 +70,45 @@ def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, f
         drag_force[i] = -drag_coeff * relative_velocity
     return drag_force
 
-def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, time, x_model, x_normalizer, t_model, t_normalizer, print_forces=False):
+def compute_particle_forces_using_arf(positions, velocities, mass, radii, dt, time, print_forces=False):
     """
-    使用训练好的PINN模型计算粒子受力
-    - x_model: 位置相关的力模型 (ARFNet)
-    - t_model: 时间相关的力模型 (ARFNetT)
+    使用ARF物理公式计算粒子受力
     - print_forces: 是否打印力信息
     """
-    if x_model is None or x_normalizer is None or t_model is None or t_normalizer is None:
-        print("PINN模型未完全初始化，无法计算力")
-        return positions, velocities, None
-    
     try:
-        with torch.no_grad():
-            # 准备输入数据
-            x = torch.tensor(positions[:, 0], dtype=torch.float32)
-            y = torch.tensor(positions[:, 1], dtype=torch.float32)
-            t = torch.full_like(x, time, dtype=torch.float32)
+        # 使用ARF物理公式计算声辐射力
+        positions, velocities = compute_pressure_gradient_and_apply_arf(
+            positions, velocities, mass, radii, dt, domain_size, (200, 200), time, compute_sound_field, IS_STANDING_WAVE
+        )
+        
+        # 计算力信息用于打印（如果需要）
+        if print_forces:
+            # 重新计算力用于显示（这里简化处理，直接使用ARF模块中的计算）
+            from mechanisms.ARF import get_particle_arf_force
+            arf_forces = np.zeros_like(positions)
+            for i in range(len(positions)):
+                arf_forces[i] = get_particle_arf_force(positions[i, 0], positions[i, 1], radii[i], time)
             
-            # 将x坐标中心化到通道中点，再按训练范围归一化
-            x_centered = x - (domain_size[0] / 2.0)
-            x_norm = (x_centered - X_MIN) / (X_MAX - X_MIN)
-            x_norm = torch.clamp(x_norm, 0.0, 1.0)
-            
-            # 归一化时间用于t模型
-            t_min, t_max = 0.0, 0.0001  # 从归一化参数文件获取
-            t_norm = (t - t_min) / (t_max - t_min)
-            
-            # 使用x模型预测位置相关的力（归一化后的值）
-            fx_spatial_norm = x_model(x_norm.unsqueeze(1))
-            
-            # 使用t模型预测时间因子（归一化后的值）
-            time_factor_norm = t_model(t_norm.unsqueeze(1))
-            
-            # 反归一化x模型的输出
-            if x_normalizer is not None and 'fx' in x_normalizer.stats:
-                fx_mu, fx_sigma = x_normalizer.stats['fx']
-                fx_spatial = fx_spatial_norm * fx_sigma + fx_mu
-            else:
-                # 如果没有归一化器，使用加载/默认的反归一化参数
-                fx_spatial = fx_spatial_norm * FORCE_SIGMA + FORCE_MU
-            
-            # 反归一化t模型的输出
-            if t_normalizer is not None and 'fx' in t_normalizer.stats:
-                tf_mu, tf_sigma = t_normalizer.stats['fx']
-                time_factor = time_factor_norm * tf_sigma + tf_mu
-            else:
-                # 如果没有归一化器，使用默认的反归一化参数
-                time_factor_mu = -0.0006397787947207689
-                time_factor_sigma = 0.7075421214103699
-                time_factor = time_factor_norm * time_factor_sigma + time_factor_mu
-            
-            # 组合得到最终的力：F = F_spatial * F_temporal
-            fx = fx_spatial.squeeze() * time_factor.squeeze()
-            fy = torch.zeros_like(fx)  # 假设只有x方向的力
-            
-            # 转换为numpy数组
-            fx = fx.numpy()
-            fy = fy.numpy()
-            
-            # 打印力信息（如果需要）
-            if print_forces:
-                stokes_force = compute_stokes_drag_force(positions, velocities, radii) if USE_STOKES_DRAG else np.zeros_like(positions)
-                print(f"\n=== 时间步 {time:.6f}s 的粒子受力 ===")
-                print("粒子ID | X位置(mm) | Y位置(mm) | PINN Fx(pN) | PINN Fy(pN) | Stokes Fx(pN) | Stokes Fy(pN)")
-                print("-" * 110)
-                for i in range(len(positions)):
-                    print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {fx[i]*1e12:12.3e} | {fy[i]*1e12:12.3e} | {stokes_force[i,0]*1e12:13.3e} | {stokes_force[i,1]*1e12:13.3e}")
-                print(f"总粒子数: {len(positions)}")
-                print(f"PINN 平均Fx: {np.mean(fx)*1e12:.3e} pN | 范围: [{np.min(fx)*1e12:.3e}, {np.max(fx)*1e12:.3e}] pN")
-                if USE_STOKES_DRAG:
-                    print(f"Stokes 平均Fx: {np.mean(stokes_force[:,0])*1e12:.3e} pN | 范围: [{np.min(stokes_force[:,0])*1e12:.3e}, {np.max(stokes_force[:,0])*1e12:.3e}] pN")
-                print("=" * 110)
-            
-            # 计算加速度
-            accelerations = np.column_stack([fx, fy]) / mass[:, None]
-            
-            # 更新速度和位置
-            velocities = velocities + accelerations * dt
-            positions = positions + velocities * dt
-            
-            return positions, velocities, (fx, fy)
+            stokes_force = compute_stokes_drag_force(positions, velocities, radii) if USE_STOKES_DRAG else np.zeros_like(positions)
+            print(f"\n=== 时间步 {time:.6f}s 的粒子受力 ===")
+            print("粒子ID | X位置(mm) | Y位置(mm) | ARF Fx(pN) | ARF Fy(pN) | Stokes Fx(pN) | Stokes Fy(pN)")
+            print("-" * 110)
+            for i in range(len(positions)):
+                print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {arf_forces[i,0]*1e12:12.3e} | {arf_forces[i,1]*1e12:12.3e} | {stokes_force[i,0]*1e12:13.3e} | {stokes_force[i,1]*1e12:13.3e}")
+            print(f"总粒子数: {len(positions)}")
+            print(f"ARF 平均Fx: {np.mean(arf_forces[:,0])*1e12:.3e} pN | 范围: [{np.min(arf_forces[:,0])*1e12:.3e}, {np.max(arf_forces[:,0])*1e12:.3e}] pN")
+            if USE_STOKES_DRAG:
+                print(f"Stokes 平均Fx: {np.mean(stokes_force[:,0])*1e12:.3e} pN | 范围: [{np.min(stokes_force[:,0])*1e12:.3e}, {np.max(stokes_force[:,0])*1e12:.3e}] pN")
+            print("=" * 110)
+        
+        return positions, velocities, None
             
     except Exception as e:
-        print(f"PINN模型计算力时出错: {e}")
+        print(f"ARF物理公式计算力时出错: {e}")
         print("将使用零力（无外力效应）")
-        # 如果PINN计算失败，不施加任何力，保持原有运动
+        # 如果ARF计算失败，不施加任何力，保持原有运动
         return positions, velocities, None
-# 移除所有力学计算模块的导入，现在只使用PINN模型
+# 移除所有力学计算模块的导入，现在只使用ARF物理公式
 
 # 性能监控变量
 performance_data = {
@@ -202,81 +152,18 @@ positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=d
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
-# 初始化PINN模型
-print("正在加载训练好的PINN模型...")
+# 初始化ARF物理公式计算
+print("正在初始化ARF物理公式计算...")
 try:
-    # 初始化x模型（位置相关）
-    x_model = ARFNetX(fourier_features=32)
-    x_model_path = 'PINN/arf_model_x.pth'
-    if os.path.exists(x_model_path):
-        x_model.load_state_dict(torch.load(x_model_path, map_location='cpu', weights_only=True))
-        print(f"成功加载x模型权重: {x_model_path}")
-    else:
-        print(f"警告: x模型文件 {x_model_path} 不存在")
-        x_model = None
-    
-    # 初始化t模型（时间相关）
-    t_model = ARFNetT(period_seconds=1.0 / frequency)
-    t_model_path = 'PINN/arf_model_t.pth'
-    if os.path.exists(t_model_path):
-        t_model.load_state_dict(torch.load(t_model_path, map_location='cpu', weights_only=True))
-        print(f"成功加载t模型权重: {t_model_path}")
-    else:
-        print(f"警告: t模型文件 {t_model_path} 不存在")
-        t_model = None
-    
-    # 加载归一化参数（x模型使用PINN/arf_model_x_normalization_params.json）
-    x_norm_path = 'PINN/arf_model_x_normalization_params.json'
-    t_norm_path = 'arf_model_t_normalization_params.json'
-    
-    x_normalizer = None
-    # 默认值（当文件缺失或读取失败时使用）
-    X_MIN = -0.0255
-    X_MAX = 0.0255
-    FORCE_MU = 4.5863430241099845e-12
-    FORCE_SIGMA = 1.4498783250382896e-11
-    t_normalizer = None
-    
-    if os.path.exists(x_norm_path):
-        x_normalizer = NormalizerX()
-        x_normalizer.load(x_norm_path, device='cpu')
-        try:
-            with open(x_norm_path, 'r') as f:
-                _params = json.load(f)
-            if 'x_min' in _params and 'x_max' in _params:
-                X_MIN = float(_params['x_min'])
-                X_MAX = float(_params['x_max'])
-            if 'force_mu' in _params:
-                FORCE_MU = float(_params['force_mu'])
-            if 'force_sigma' in _params:
-                FORCE_SIGMA = max(float(_params['force_sigma']), 1e-30)
-            print(f"成功加载x模型归一化参数: {x_norm_path}")
-            print(f"x范围: [{X_MIN*1000:.1f}, {X_MAX*1000:.1f}] mm | 力均值/方差: {FORCE_MU:.3e}/{FORCE_SIGMA:.3e}")
-        except Exception as _e:
-            print(f"读取x归一化参数文件时出错: {_e}，使用默认参数")
-    
-    if os.path.exists(t_norm_path):
-        t_normalizer = NormalizerT()
-        t_normalizer.load(t_norm_path, device='cpu')
-        print(f"成功加载t模型归一化参数: {t_norm_path}")
-    
-    # 设置为评估模式
-    if x_model is not None:
-        x_model.eval()
-    if t_model is not None:
-        t_model.eval()
-    
-    print("PINN模型初始化完成")
+    print("ARF物理公式计算初始化完成")
+    print(f"声场参数: 频率={frequency}Hz, 振幅={amplitude*1000:.3f}mm")
+    print(f"域大小: {domain_size[0]*1000:.1f}mm x {domain_size[1]*1000:.1f}mm")
     
 except Exception as e:
-    print(f"PINN模型初始化失败: {e}")
+    print(f"ARF物理公式初始化失败: {e}")
     print("将无法进行粒子力预测")
-    x_model = None
-    t_model = None
-    x_normalizer = None
-    t_normalizer = None
 
-# 移除测试粒子相关代码，专注于PINN模型预测
+# 移除测试粒子相关代码，专注于ARF物理公式计算
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
@@ -294,10 +181,10 @@ if RUN_HEADLESS_BENCHMARK:
         simulation_time += dt
         t = simulation_time
 
-        # 力学更新：PINN
-        if USE_PINN_FORCES and (x_model is not None and t_model is not None):
-            positions, velocities, _ = compute_particle_forces_using_pinn(
-                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
+        # 力学更新：ARF物理公式
+        if USE_ARF_FORCES:
+            positions, velocities, _ = compute_particle_forces_using_arf(
+                positions, velocities, mass, radii, dt, t, print_forces=False
             )
 
         # 斯托克斯阻力
@@ -484,30 +371,13 @@ def update(frame):
     if frame == 5 and not step_timing_printed:
         t1 = time.perf_counter()
 
-    # 使用PINN模型计算粒子受力
-    if USE_PINN_FORCES:
-        if x_model is not None and t_model is not None:
-            # 使用训练好的PINN模型计算粒子受力
-            # 暂时禁用打印机制
-            # if frame % 100 == 0:  # 每100帧打印一次状态和力信息
-            #     print(f"使用PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
-            #     positions, velocities, forces = compute_particle_forces_using_pinn(
-            #         positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=True
-            #     )
-            # else:
-            #     positions, velocities, forces = compute_particle_forces_using_pinn(
-            #         positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
-            #     )
-            positions, velocities, forces = compute_particle_forces_using_pinn(
-                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
-            )
-        else:
-            # 暂时禁用警告打印
-            # if frame % 100 == 0:  # 每100帧打印一次状态
-            #     print("警告: PINN模型未完全初始化，跳过力计算")
-            pass  # 不施加任何力，保持原有运动
+    # 使用ARF物理公式计算粒子受力
+    if USE_ARF_FORCES:
+        positions, velocities, forces = compute_particle_forces_using_arf(
+            positions, velocities, mass, radii, dt, t, print_forces=False
+        )
     
-    # 计时：PINN计算结束，斯托克斯阻力开始
+    # 计时：ARF计算结束，斯托克斯阻力开始
     if frame == 5 and not step_timing_printed:
         t2 = time.perf_counter()
     
@@ -571,7 +441,7 @@ def update(frame):
             last_save_time = t  # 更新上次保存时间
 
     # 更新性能信息显示
-    pinn_status = "✓ PINN Active" if (x_model is not None and t_model is not None) else "✗ PINN Inactive"
+    arf_status = "✓ ARF Active" if USE_ARF_FORCES else "✗ ARF Inactive"
     stokes_status = "✓ Stokes Drag Active" if USE_STOKES_DRAG else "✗ Stokes Drag Inactive"
     if should_render:
         performance_text.set_text(
@@ -579,7 +449,7 @@ def update(frame):
             f'FPS: {performance_data["fps"]:.1f}\n'
             f'Frame Time: {performance_data["frame_time"]:.1f}ms\n'
             f'Particles: {performance_data["particle_count"]}\n'
-            f'PINN Models: {pinn_status}\n'
+            f'ARF Physics: {arf_status}\n'
             f'Stokes Drag: {stokes_status}'
         )
     
@@ -618,7 +488,7 @@ def update(frame):
         print("\nStep timing breakdown (frame 5):")
         print(f"  Particles:          {len(positions)}")
         print(f"  Sound field update: {t_sound:.2f} ms")
-        print(f"  PINN computation:   {t_arf:.2f} ms")
+        print(f"  ARF computation:    {t_arf:.2f} ms")
         print(f"  Stokes drag:        {t_drag:.2f} ms")
         print(f"  Scatter update:     {t_scatter:.2f} ms")
         print(f"  Density calculation:{t_density:.2f} ms")

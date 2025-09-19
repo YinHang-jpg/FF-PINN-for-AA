@@ -24,7 +24,7 @@ rho_0 = 1.225  # 空气密度 (kg/m³)
 gamma = 1.4    # 空气绝热指数
 c_0 = 340      # 声速 (m/s)
 frequency = 10000  # Hz
-amplitude = 5e-1    # m
+amplitude = 7.64e-6    # m
 def get_particle_arf_force(particle_x, particle_y, particle_radius, time):
     """
     获取特定粒子的声辐射力
