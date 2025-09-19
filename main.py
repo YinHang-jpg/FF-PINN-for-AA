@@ -198,7 +198,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -475,7 +475,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 2.5e-6
+    dt = 1e-6
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
