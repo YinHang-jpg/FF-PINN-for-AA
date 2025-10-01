@@ -4,14 +4,11 @@ import torch.nn as nn
 import torch.optim as optim
 import json
 
-# 兼容导入 ARF.py 中的常量与解析函数
+# 兼容导入 ARF.py 中的常量
 try:
-    from .ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
+    from .ARF import p_0, rho_0, gamma, c_0, frequency
 except Exception:
-    try:
-        from mechanisms.ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
-    except Exception:
-        from ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
+    from mechanisms.ARF import p_0, rho_0, gamma, c_0, frequency
 
 
 class Normalizer:

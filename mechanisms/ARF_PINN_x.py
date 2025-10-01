@@ -6,12 +6,9 @@ import json
 
 # 兼容导入 ARF.py 中的常量与解析函数
 try:
-    from .ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
+    from .ARF import p_0, rho_0, gamma, c_0, frequency, get_amplitude
 except Exception:
-    try:
-        from mechanisms.ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
-    except Exception:
-        from ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
+    from mechanisms.ARF import p_0, rho_0, gamma, c_0, frequency, get_amplitude
 
 
 class Normalizer:
@@ -121,8 +118,9 @@ def theoretical_arf(x, particle_radius=1e-6):
     x_back = x + offset
 
     # t=0时，cos(ωt) = cos(0) = 1
-    p_front = 2.0 * np.pi * amplitude * p_0 * gamma * torch.sin(k * x_front) / wavelength
-    p_back = 2.0 * np.pi * amplitude * p_0 * gamma * torch.sin(k * x_back) / wavelength
+    A = torch.tensor(get_amplitude(), dtype=x.dtype, device=x.device)
+    p_front = 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_front) / wavelength
+    p_back = 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_back) / wavelength
 
     pressure_diff = p_front - p_back
     force_magnitude = np.pi * d_p**2 * pressure_diff / 4.0

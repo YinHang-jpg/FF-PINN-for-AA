@@ -31,7 +31,7 @@ class COMSOLParticleVisualizer:
         # 密度计算相关
         self.x_grid = None
         self.baseline_density = None
-        self.bandwidth = 1.5  # 高斯核带宽（mm）
+        self.bandwidth = 1.5  # 兼容旧方法；默认使用kNN估计
         
         self.load_data()
         self.setup_visualization()
@@ -111,24 +111,25 @@ class COMSOLParticleVisualizer:
         
         # 右侧子图：密度分布（缩小到-17mm到+17mm）
         self.ax_density.set_xlim(-17, 17)
-        self.ax_density.set_ylim(-10, 10)  # 相对变化百分比范围
+        # 初始y轴范围设置得更大，后续会动态调整
+        self.ax_density.set_ylim(-1, 1)  # 初始相对变化百分比范围，后续动态调整
         self.ax_density.set_title("Particle Density Distribution")
         self.ax_density.set_xlabel("x (mm)")
         self.ax_density.set_ylabel("Relative Change (%)")
         self.ax_density.grid(True, alpha=0.3)
         
-        # 创建x坐标网格用于密度计算（-17mm到+17mm）
-        self.x_grid = np.linspace(-17, 17, 200)
+        # 创建x坐标网格用于密度计算（-17mm到+17mm），与DEM_main.py保持一致
+        self.x_grid = np.linspace(-17, 17, 200)  # 与DEM_main.py中的网格密度一致
         
         # 计算初始密度分布作为基线（忽略NaN）
         initial_positions_mm = (self.particle_positions[0, :] * 1000)
         initial_positions_mm = initial_positions_mm[np.isfinite(initial_positions_mm)]
-        initial_density = self.compute_density(initial_positions_mm, self.x_grid)
+        initial_density = self.compute_density_knn(initial_positions_mm, self.x_grid, k_neighbors=None)
         self.baseline_density = np.mean(initial_density)
         
         # 初始化散点图和密度线
         self.scatter = self.ax_particles.scatter([], [], s=50, c='blue', alpha=0.6, label='Particles')
-        self.density_line, = self.ax_density.plot([], [], 'b-', linewidth=2, label='Relative Change (%)')
+        self.density_line, = self.ax_density.plot([], [], 'b-', linewidth=3, label='Relative Change (%)', alpha=0.8)
         
         # 添加图例
         self.ax_particles.legend()
@@ -139,22 +140,51 @@ class COMSOLParticleVisualizer:
                                                verticalalignment='top', fontsize=12,
                                                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    def compute_density(self, x_positions, x_grid):
-        """
-        使用高斯核计算密度分布
-        
-        Args:
-            x_positions: 粒子x位置数组（mm）
-            x_grid: 计算密度的x坐标网格（mm）
-        
-        Returns:
-            density: 密度分布数组
-        """
-        density = np.zeros_like(x_grid)
-        for x in x_positions:
-            # 高斯核：exp(-(x-x_i)^2 / (2*bandwidth^2))
-            density += np.exp(-0.5 * ((x_grid - x) / self.bandwidth) ** 2)
+    def compute_density_knn(self, x_positions_mm, x_grid_mm, k_neighbors=None):
+        """一维kNN密度估计，保持峰值并提供全局平滑。"""
+        x_positions_mm = np.asarray(x_positions_mm)
+        x_grid_mm = np.asarray(x_grid_mm)
+        N = len(x_positions_mm)
+        if N == 0:
+            return np.zeros_like(x_grid_mm)
+        if k_neighbors is None:
+            k = max(10, int(0.03 * N))
+        else:
+            k = int(k_neighbors)
+        k = max(1, min(k, max(1, N // 2)))
+        diffs = np.abs(x_positions_mm[:, None] - x_grid_mm[None, :])
+        r_k = np.partition(diffs, kth=k-1, axis=0)[k-1, :]
+        density = k / (N * 2.0 * np.maximum(r_k, 1e-9))
         return density
+
+    def smooth_preserve_minmax(self, y, window_ratio=0.07, min_limit=-99.9):
+        """Hanning平滑并线性重标定到原始极值，且裁切到接近-100%。"""
+        y = np.asarray(y)
+        n = y.size
+        if n < 5:
+            return y
+        w = max(5, int(n * float(window_ratio)))
+        if w % 2 == 0:
+            w += 1
+        if w >= n:
+            w = n - 1 if (n - 1) % 2 == 1 else n - 2
+        if w < 5:
+            return y
+        pad = w // 2
+        y_pad = np.pad(y, (pad, pad), mode='reflect')
+        kernel = np.hanning(w)
+        kernel = kernel / np.sum(kernel)
+        y_s = np.convolve(y_pad, kernel, mode='valid')
+        y_min = float(np.nanmin(y))
+        y_max = float(np.nanmax(y))
+        ys_min = float(np.nanmin(y_s))
+        ys_max = float(np.nanmax(y_s))
+        if np.isfinite(y_min) and np.isfinite(y_max) and ys_max > ys_min and y_max > y_min:
+            a = (y_max - y_min) / (ys_max - ys_min)
+            b = y_min - a * ys_min
+            y_s = a * y_s + b
+        y_s = np.maximum(y_s, min_limit)
+        return y_s
     
     def update_frame(self, frame):
         """更新动画帧"""
@@ -171,27 +201,40 @@ class COMSOLParticleVisualizer:
         scatter_data = np.column_stack([current_positions, y_positions])
         self.scatter.set_offsets(scatter_data)
         
-        # 计算密度分布
-        current_density = self.compute_density(current_positions, self.x_grid)
+        # 计算密度分布（kNN估计）并构造相对变化百分比
+        current_density = self.compute_density_knn(current_positions, self.x_grid, k_neighbors=None)
         relative_change = (current_density - self.baseline_density) / self.baseline_density * 100.0
+        relative_change = self.smooth_preserve_minmax(relative_change)
         
         # 更新密度曲线
         self.density_line.set_data(self.x_grid, relative_change)
         
-        # 动态调整密度图的y轴范围（NaN安全，带最小跨度与边距）
-        y_min = float(np.nanmin(relative_change)) if np.any(np.isfinite(relative_change)) else -1.0
-        y_max = float(np.nanmax(relative_change)) if np.any(np.isfinite(relative_change)) else 1.0
-        # 确保最小跨度，避免y_min==y_max导致不可视
-        span = max(y_max - y_min, 0.1)
-        # 计算边距（取10%或0.5中的较大者）
-        y_margin = max(span * 0.1, 0.5)
-        center = (y_max + y_min) / 2.0
-        self.ax_density.set_ylim(center - span / 2.0 - y_margin, center + span / 2.0 + y_margin)
+        # 动态调整密度图的y轴范围（保持微小变化可见性）
+        if np.any(np.isfinite(relative_change)):
+            y_min = float(np.nanmin(relative_change))
+            y_max = float(np.nanmax(relative_change))
+            
+            # 如果数据范围很小，使用更精细的调整以显示微小变化
+            if abs(y_max - y_min) < 1e-6:  # 如果范围小于1e-6
+                # 对于非常小的变化，使用固定的精细范围
+                center = (y_max + y_min) / 2.0
+                y_margin = max(abs(center) * 0.1, 1e-7)  # 至少1e-7的边距
+                self.ax_density.set_ylim(center - y_margin, center + y_margin)
+            else:
+                # 对于正常范围，使用10%边距
+                y_margin = (y_max - y_min) * 0.1
+                self.ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
+        else:
+            # 如果没有有效数据，保持当前范围
+            pass
         
         # 更新标题和时间显示
         current_time = self.times[frame]
+        # 获取当前y轴范围用于显示
+        y_lim = self.ax_density.get_ylim()
+        y_range = y_lim[1] - y_lim[0]
         self.ax_density.set_title(f"Particle Density Distribution (t = {current_time:.6f} s)")
-        self.time_text.set_text(f'Time: {current_time:.6f} s\nFrame: {frame+1}/{self.num_frames}\nParticles: {self.num_particles}')
+        self.time_text.set_text(f'Time: {current_time:.6f} s\nFrame: {frame+1}/{self.num_frames}\nParticles: {self.num_particles}\nY Range: [{y_lim[0]:.2e}, {y_lim[1]:.2e}]\nSpan: {y_range:.2e}')
         
         # 如果是最后一帧，输出密度相对变化的峰值与谷值及对应位置
         if frame == self.num_frames - 1:
@@ -232,7 +275,7 @@ class COMSOLParticleVisualizer:
             frames=self.num_frames,
             interval=interval,
             blit=False,
-            repeat=True
+            repeat=False
         )
         
         # 保存动画（如果指定了路径）
@@ -262,6 +305,7 @@ def main():
     
     try:
         # 创建可视化器
+        print("创建COMSOL粒子可视化器...")
         visualizer = COMSOLParticleVisualizer(csv_file)
         
         # 显示动画

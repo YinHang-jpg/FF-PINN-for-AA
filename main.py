@@ -38,10 +38,10 @@ step_timing_printed = False  # 标记是否已打印过第5帧的计时信息
 
 # 导入声场计算（仅用于可视化）
 if USE_TRAVELING_WAVE:
-    from initialization.sound_source_traveling import compute_sound_field, frequency, amplitude
+    from initialization.sound_source_traveling import compute_sound_field, frequency
     IS_STANDING_WAVE = False
 else:
-    from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
+    from initialization.sound_source_standing import compute_sound_field, frequency
     IS_STANDING_WAVE = True
 
 # 导入PINN模型
@@ -198,7 +198,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=100, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -280,7 +280,7 @@ except Exception as e:
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
-    steps = 1000
+    steps = 100000
     dt = 1e-7
     print(f"Headless benchmark started: steps={steps}, dt={dt}")
     print("开始计算...")
@@ -389,14 +389,16 @@ ax_density.grid(True, alpha=0.3)
 
 # 声场
 X, Y, P = compute_sound_field(domain_size=domain_size, resolution=(200, 200), time=0.0)
+# 根据初始声压场动态设置可视化幅值范围
+_p_amp = float(np.max(np.abs(P))) if np.size(P) > 0 else 1.0
 sound_img = ax_particles.imshow(
     P,
     extent=(0, domain_size[0] * 1000, 0, domain_size[1] * 1000),
     origin='lower',
     cmap='RdBu_r',
     alpha=0.4,
-    vmin=-amplitude,
-    vmax=amplitude
+    vmin=-_p_amp,
+    vmax=_p_amp
 )
 
 # 普通粒子

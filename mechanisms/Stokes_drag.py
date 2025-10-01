@@ -32,7 +32,7 @@ def apply_stokes_drag(positions, velocities, radii, mass, dt, viscosity=1.79e-5,
     :param viscosity: 流体动力粘度 (Pa·s)
     :param fluid_velocity: (N,2) 流体速度场，None则为零场
     :param lambda_g: 气体分子平均自由程 (m)
-    :return: 更新后的 positions, velocities
+    :return: drag_force (N,2) 阻力向量（不在此处更新速度与位置）
     """
     positions = np.asarray(positions)
     velocities = np.asarray(velocities)
@@ -50,8 +50,4 @@ def apply_stokes_drag(positions, velocities, radii, mass, dt, viscosity=1.79e-5,
     relative_velocity = velocities - fluid_velocity  # (N,2)
     drag_force = -drag_coeff * relative_velocity  # (N,2)
 
-    drag_acceleration = drag_force / mass[:, None]
-    velocities = velocities + drag_acceleration * dt
-    positions = positions + velocities * dt
-
-    return positions, velocities
+    return drag_force

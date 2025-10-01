@@ -9,14 +9,17 @@ import os
 import torch
 import json
 import sys
+from scipy.stats import gaussian_kde
+from scipy.signal import savgol_filter
+from scipy.optimize import minimize_scalar
 
 # 配置开关 - 使用ARF物理公式进行力预测，同时开启斯托克斯阻力
-RUN_HEADLESS_BENCHMARK = True  # 关闭渲染与动画，仅计算并在1000步后退出
+RUN_HEADLESS_BENCHMARK = True # 关闭渲染与动画，仅计算并在1000步后退出
 USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
 USE_ARF_FORCES = True  # 使用ARF物理公式计算所有粒子受力
 USE_GRAVITY = False
-USE_STOKES_DRAG = False  # 开启斯托克斯阻力
+USE_STOKES_DRAG = True # 开启斯托克斯阻力
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
 USE_ACOUSTIC_WAKE = False  # 关闭，由ARF物理公式处理
@@ -41,22 +44,19 @@ if USE_TRAVELING_WAVE:
     from initialization.sound_source_traveling import compute_sound_field, frequency, amplitude
     IS_STANDING_WAVE = False
 else:
-    from initialization.sound_source_standing import compute_sound_field, frequency, amplitude
+    from initialization.sound_source_standing import compute_sound_field, frequency, sound_pressure_level, spl_to_pressure
     IS_STANDING_WAVE = True
+    # 动态计算振幅
+    def get_amplitude():
+        return 2 * spl_to_pressure(sound_pressure_level)
 
 # 导入ARF物理公式计算模块
 from mechanisms.ARF import compute_pressure_gradient_and_apply_arf
 
 # 导入斯托克斯阻力模块
-from mechanisms.Stokes_drag import apply_stokes_drag
+from mechanisms.Stokes_drag import apply_stokes_drag, cunningham_correction_factor
 
 # 仅用于打印：根据当前速度计算每个粒子的斯托克斯阻力（与 mechanisms/Stokes_drag.py 一致）
-def _cunningham_correction_factor(d_p, lambda_g):
-    ratio = d_p / lambda_g
-    exp_term = np.exp(-0.550 * ratio)
-    bracket_term = 2.514 + 0.800 * exp_term
-    return 1.0 + bracket_term * ratio
-
 def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, fluid_velocity=None, lambda_g=6.5e-8):
     N = len(positions)
     if fluid_velocity is None:
@@ -64,51 +64,12 @@ def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, f
     drag_force = np.zeros_like(positions)
     for i in range(N):
         d_p = 2.0 * radii[i]
-        C_c = _cunningham_correction_factor(d_p, lambda_g)
+        C_c = cunningham_correction_factor(d_p, lambda_g)
         relative_velocity = velocities[i] - fluid_velocity[i]
         drag_coeff = 3.0 * np.pi * viscosity * d_p / C_c
         drag_force[i] = -drag_coeff * relative_velocity
     return drag_force
 
-def compute_particle_forces_using_arf(positions, velocities, mass, radii, dt, time, print_forces=False):
-    """
-    使用ARF物理公式计算粒子受力
-    - print_forces: 是否打印力信息
-    """
-    try:
-        # 使用ARF物理公式计算声辐射力
-        positions, velocities = compute_pressure_gradient_and_apply_arf(
-            positions, velocities, mass, radii, dt, domain_size, (200, 200), time, compute_sound_field, IS_STANDING_WAVE
-        )
-        
-        # 计算力信息用于打印（如果需要）
-        if print_forces:
-            # 重新计算力用于显示（这里简化处理，直接使用ARF模块中的计算）
-            from mechanisms.ARF import get_particle_arf_force
-            arf_forces = np.zeros_like(positions)
-            for i in range(len(positions)):
-                arf_forces[i] = get_particle_arf_force(positions[i, 0], positions[i, 1], radii[i], time)
-            
-            stokes_force = compute_stokes_drag_force(positions, velocities, radii) if USE_STOKES_DRAG else np.zeros_like(positions)
-            print(f"\n=== 时间步 {time:.6f}s 的粒子受力 ===")
-            print("粒子ID | X位置(mm) | Y位置(mm) | ARF Fx(pN) | ARF Fy(pN) | Stokes Fx(pN) | Stokes Fy(pN)")
-            print("-" * 110)
-            for i in range(len(positions)):
-                print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {arf_forces[i,0]*1e12:12.3e} | {arf_forces[i,1]*1e12:12.3e} | {stokes_force[i,0]*1e12:13.3e} | {stokes_force[i,1]*1e12:13.3e}")
-            print(f"总粒子数: {len(positions)}")
-            print(f"ARF 平均Fx: {np.mean(arf_forces[:,0])*1e12:.3e} pN | 范围: [{np.min(arf_forces[:,0])*1e12:.3e}, {np.max(arf_forces[:,0])*1e12:.3e}] pN")
-            if USE_STOKES_DRAG:
-                print(f"Stokes 平均Fx: {np.mean(stokes_force[:,0])*1e12:.3e} pN | 范围: [{np.min(stokes_force[:,0])*1e12:.3e}, {np.max(stokes_force[:,0])*1e12:.3e}] pN")
-            print("=" * 110)
-        
-        return positions, velocities, None
-            
-    except Exception as e:
-        print(f"ARF物理公式计算力时出错: {e}")
-        print("将使用零力（无外力效应）")
-        # 如果ARF计算失败，不施加任何力，保持原有运动
-        return positions, velocities, None
-# 移除所有力学计算模块的导入，现在只使用ARF物理公式
 
 # 性能监控变量
 performance_data = {
@@ -148,7 +109,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -156,7 +117,7 @@ initial_positions = positions.copy()
 print("正在初始化ARF物理公式计算...")
 try:
     print("ARF物理公式计算初始化完成")
-    print(f"声场参数: 频率={frequency}Hz, 振幅={amplitude*1000:.3f}mm")
+    print(f"声场参数: 频率={frequency}Hz, 振幅={get_amplitude()*1000:.3f}mm")
     print(f"域大小: {domain_size[0]*1000:.1f}mm x {domain_size[1]*1000:.1f}mm")
     
 except Exception as e:
@@ -167,8 +128,8 @@ except Exception as e:
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
-    steps = 1000
-    dt = 1e-7
+    steps = 1
+    dt = 1e-18
     print(f"Headless benchmark started: steps={steps}, dt={dt}")
     print("开始计算...")
     
@@ -181,23 +142,32 @@ if RUN_HEADLESS_BENCHMARK:
         simulation_time += dt
         t = simulation_time
 
-        # 力学更新：ARF物理公式
+        # 力学更新：计算各项力（不在子模块中更新状态）
+        total_force = np.zeros_like(positions)
         if USE_ARF_FORCES:
-            positions, velocities, _ = compute_particle_forces_using_arf(
-                positions, velocities, mass, radii, dt, t, print_forces=False
+            arf_force = compute_pressure_gradient_and_apply_arf(
+                positions, radii, t
             )
 
-        # 斯托克斯阻力
+            total_force += arf_force
+
         if USE_STOKES_DRAG:
-            positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
-        
+            drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt)
+            total_force += drag_force
+
+        # 显式欧拉积分（统一在主循环中进行）
+        accelerations = total_force / mass[:, None]
+        velocities = velocities + accelerations * dt
+        positions = positions + velocities * dt
+
         # 每10000步打印一次进度
         if (step + 1) % 10000 == 0:
             current_time = time.perf_counter()
             elapsed_so_far = current_time - total_start_time
             progress = (step + 1) / steps * 100
             print(f"进度: {step + 1}/{steps} ({progress:.1f}%) - 已用时: {elapsed_so_far:.2f}s")
-
+        if step == steps-1:
+            print(positions)
     # 计算总耗时
     total_end_time = time.perf_counter()
     total_elapsed = total_end_time - total_start_time
@@ -213,11 +183,92 @@ if RUN_HEADLESS_BENCHMARK:
     print(f"最终仿真时间: {simulation_time:.6f} s")
 
     # 计算完成后，绘制一次静态图（粒子位置 + 密度分布），不保存，仅展示
-    def _compute_density(_x_positions_mm, _x_grid_mm, bandwidth_mm=1.5):
-        d = np.zeros_like(_x_grid_mm)
-        for _x in _x_positions_mm:
-            d += np.exp(-0.5 * ((_x_grid_mm - _x) / bandwidth_mm) ** 2)
-        return d
+    def _optimize_bandwidth_1d(x_coords_mm, max_samples_for_cv=50):
+        """优化KDE带宽因子（相对Scott规则的乘数，越小越窄）。"""
+        x = np.asarray(x_coords_mm)
+        x = x[np.isfinite(x)]
+        if x.size < 2:
+            return None
+        # 目标函数：负对数似然（采样最多max_samples_for_cv个点加速）
+        idx = np.arange(x.size)
+        if x.size > max_samples_for_cv:
+            rng = np.random.default_rng(42)
+            cv_idx = rng.choice(idx, size=max_samples_for_cv, replace=False)
+        else:
+            cv_idx = idx
+
+        def objective(factor):
+            if factor <= 0:
+                return np.inf
+            log_like = 0.0
+            for i in cv_idx:
+                train = np.delete(x, i)
+                try:
+                    kde = gaussian_kde(train, bw_method=float(factor))
+                    pdf_val = float(kde(x[i])[0])
+                    if pdf_val > 0:
+                        log_like += np.log(pdf_val)
+                except Exception:
+                    return np.inf
+            return -log_like
+
+        # 搜索较小因子以保留峰值，同时避免>1导致过度平滑
+        res = minimize_scalar(objective, bounds=(0.05, 1.0), method='bounded')
+        return float(res.x) if res.success else 1.0
+
+    def _kde_density_1d(x_coords_mm, eval_grid_mm, bw=None):
+        x = np.asarray(x_coords_mm)
+        if x.size == 0:
+            return np.zeros_like(eval_grid_mm)
+        if bw is None:
+            bw = _optimize_bandwidth_1d(x)
+        kde = gaussian_kde(x, bw_method=float(bw))
+        return kde(eval_grid_mm)
+
+    def _smooth_preserve_minmax(_y, window_ratio_base=0.07, window_ratio_strong=0.15, ptp_flat_threshold=0.5, min_limit=-99.9):
+        """自适应Hanning平滑：
+        - 变化小（峰-谷幅度 < 阈值）时：更强平滑且不做极值重标定，避免引入虚假正弦；
+        - 变化明显时：常规平滑并线性重标定回原始[min, max]以保持峰谷；
+        - 始终进行反射填充，曲线无断点；并裁切至接近-100%。
+        参数单位：_y为百分比数据（%），ptp_flat_threshold为百分比点阈值。
+        """
+        y = np.asarray(_y)
+        n = y.size
+        if n < 5:
+            return np.maximum(y, min_limit)
+
+        y_min = float(np.min(y))
+        y_max = float(np.max(y))
+        ptp = y_max - y_min
+
+        # 根据幅度选择窗口与是否重标定
+        is_flat = bool(ptp <= float(ptp_flat_threshold))
+        window_ratio = float(window_ratio_strong if is_flat else window_ratio_base)
+
+        w = max(5, int(n * window_ratio))
+        if w % 2 == 0:
+            w += 1
+        if w >= n:
+            w = n - 1 if (n - 1) % 2 == 1 else n - 2
+        if w < 5:
+            return np.maximum(y, min_limit)
+
+        pad = w // 2
+        y_pad = np.pad(y, (pad, pad), mode='reflect')
+        kernel = np.hanning(w)
+        kernel = kernel / np.sum(kernel)
+        y_s = np.convolve(y_pad, kernel, mode='valid')
+
+        if not is_flat:
+            ys_min = float(np.min(y_s))
+            ys_max = float(np.max(y_s))
+            if ys_max > ys_min and y_max > y_min:
+                a = (y_max - y_min) / (ys_max - ys_min)
+                b = y_min - a * ys_min
+                y_s = a * y_s + b
+
+        y_s = np.maximum(y_s, min_limit)
+        return y_s
 
     fig_h, (ax_p_h, ax_d_h) = plt.subplots(1, 2, figsize=(16, 6))
 
@@ -233,10 +284,13 @@ if RUN_HEADLESS_BENCHMARK:
     x_grid_h = np.linspace(0.0, domain_size[0] * 1000.0, 200)
     initial_x_mm_h = initial_positions[:, 0] * 1000.0
     current_x_mm = positions[:, 0] * 1000.0
-    initial_density_h = _compute_density(initial_x_mm_h, x_grid_h, bandwidth_mm=1.5)
+    # 使用优化带宽的KDE计算初始密度
+    bw_init_h = _optimize_bandwidth_1d(initial_x_mm_h)
+    initial_density_h = _kde_density_1d(initial_x_mm_h, x_grid_h, bw=bw_init_h)
     baseline_h = np.mean(initial_density_h)
-    current_density_h = _compute_density(current_x_mm, x_grid_h, bandwidth_mm=1.5)
+    current_density_h = _kde_density_1d(current_x_mm, x_grid_h, bw=None)
     relative_change_h = (current_density_h - baseline_h) / baseline_h * 100.0
+    relative_change_h = _smooth_preserve_minmax(relative_change_h)
     ax_d_h.plot(x_grid_h, relative_change_h, 'b-', linewidth=2, label='Relative Change (%)')
     # 动态y轴范围（10%边距）
     y_min_h = float(np.min(relative_change_h))
@@ -282,8 +336,8 @@ sound_img = ax_particles.imshow(
     origin='lower',
     cmap='RdBu_r',
     alpha=0.4,
-    vmin=-amplitude,
-    vmax=amplitude
+    vmin=-get_amplitude(),
+    vmax=get_amplitude()
 )
 
 # 普通粒子
@@ -305,23 +359,56 @@ x_grid = np.linspace(0.0, domain_size[0] * 1000.0, 200)
 # 计算初始粒子的x坐标（单位：mm）
 initial_x_positions = positions[:, 0] * 1000.0
 
-# 使用高斯核密度估计计算初始密度分布
-def compute_density(x_positions, x_grid, bandwidth=1.0):
-    """使用高斯核计算密度分布"""
-    density = np.zeros_like(x_grid)
-    for x in x_positions:
-        # 高斯核：exp(-(x-x_i)^2 / (2*bandwidth^2))
-        density += np.exp(-0.5 * ((x_grid - x) / bandwidth) ** 2)
-    return density
+def _optimize_bandwidth_1d_anim(x_coords_mm, max_samples_for_cv=50):
+    x = np.asarray(x_coords_mm)
+    x = x[np.isfinite(x)]
+    if x.size < 2:
+        return None
+    idx = np.arange(x.size)
+    if x.size > max_samples_for_cv:
+        rng = np.random.default_rng(42)
+        cv_idx = rng.choice(idx, size=max_samples_for_cv, replace=False)
+    else:
+        cv_idx = idx
 
-# 计算初始密度分布
-initial_density = compute_density(initial_x_positions, x_grid, bandwidth=1.5)
-# 归一化到相对变化百分比
+    def objective(factor):
+        if factor <= 0:
+            return np.inf
+        log_like = 0.0
+        for i in cv_idx:
+            train = np.delete(x, i)
+            try:
+                kde = gaussian_kde(train, bw_method=float(factor))
+                pdf_val = float(kde(x[i])[0])
+                if pdf_val > 0:
+                    log_like += np.log(pdf_val)
+            except Exception:
+                return np.inf
+        return -log_like
+
+    res = minimize_scalar(objective, bounds=(0.05, 1.0), method='bounded')
+    return float(res.x) if res.success else 1.0
+
+def _kde_density_1d_anim(x_coords_mm, eval_grid_mm, bw=None):
+    x = np.asarray(x_coords_mm)
+    if x.size == 0:
+        return np.zeros_like(eval_grid_mm)
+    if bw is None:
+        bw = _optimize_bandwidth_1d_anim(x)
+    kde = gaussian_kde(x, bw_method=float(bw))
+    return kde(eval_grid_mm)
+
+"""使用优化带宽KDE计算初始密度与基线"""
+bw_init_anim = _optimize_bandwidth_1d_anim(initial_x_positions)
+initial_density = _kde_density_1d_anim(initial_x_positions, x_grid, bw=bw_init_anim)
 baseline = np.mean(initial_density)
 initial_relative = (initial_density - baseline) / baseline * 100.0
+def smooth_preserve_minmax(y):
+    # 使用保峰平滑，避免削弱峰值
+    return _smooth_preserve_minmax(y)
 
-# 绘制初始密度曲线
-density_line, = ax_density.plot(x_grid, initial_relative, 'b-', linewidth=2, label='Relative change')
+# 绘制初始密度曲线（KDE + 优化带宽 + 保峰平滑）
+density_line, = ax_density.plot(x_grid, smooth_preserve_minmax(initial_relative), 'b-', linewidth=2, label='Relative change')
 ax_density.legend()
 
 
@@ -333,8 +420,12 @@ last_frame_time = time.time()
 def update(frame):
     global positions, velocities, radii, mass, frame_times, last_frame_time, density_plot_saved, last_save_time, initial_positions, step_timing_printed
 
+    # 添加调试信息
+    if frame < 5:  # 只在前5帧打印调试信息
+        print(f"Frame {frame}: Starting update function")
+
     # 渲染间隔（仅控制可视化与UI的更新频率；物理仍每帧推进）
-    render_interval = 1000
+    render_interval = 1  # 每帧都渲染，确保动画流畅
     should_render = (frame % render_interval == 0)
 
     # 开始计时（第5帧时）
@@ -362,7 +453,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 2.5e-6
+    dt = 1e-6
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -371,19 +462,37 @@ def update(frame):
     if frame == 5 and not step_timing_printed:
         t1 = time.perf_counter()
 
-    # 使用ARF物理公式计算粒子受力
+    # 使用ARF与阻力计算力，并在此处做积分
+    total_force = np.zeros_like(positions)
     if USE_ARF_FORCES:
-        positions, velocities, forces = compute_particle_forces_using_arf(
-            positions, velocities, mass, radii, dt, t, print_forces=False
-        )
+        if frame < 5:
+            print(f"Frame {frame}: Computing ARF forces")
+        try:
+            arf_force = compute_pressure_gradient_and_apply_arf(
+                positions, radii, t
+            )
+            print(t)
+            total_force += arf_force
+            if frame < 5:
+                print(f"Frame {frame}: ARF forces computed successfully")
+        except Exception as e:
+            print(f"Frame {frame}: ARF calculation failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     # 计时：ARF计算结束，斯托克斯阻力开始
     if frame == 5 and not step_timing_printed:
         t2 = time.perf_counter()
     
-    # 应用斯托克斯阻力
+    # 应用斯托克斯阻力（力）
     if USE_STOKES_DRAG:
-        positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
+        drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt)
+        total_force += drag_force
+
+    # 统一积分更新
+    accelerations = total_force / mass[:, None]
+    velocities = velocities + accelerations * dt
+    positions = positions + velocities * dt
     
     # 计时：斯托克斯阻力结束，可视化更新开始
     if frame == 5 and not step_timing_printed:
@@ -401,10 +510,12 @@ def update(frame):
         t4 = time.perf_counter()
     
     if should_render:
-        # 更新密度分布曲线（使用核密度估计）
+        # 更新密度分布曲线（KDE + 优化带宽 + 保峰平滑）
         current_x_positions = positions[:, 0] * 1000.0
-        current_density = compute_density(current_x_positions, x_grid, bandwidth=1.5)
+        bw_cur = _optimize_bandwidth_1d_anim(current_x_positions)
+        current_density = _kde_density_1d_anim(current_x_positions, x_grid, bw=bw_cur)
         relative_change = (current_density - baseline) / baseline * 100.0
+        relative_change = smooth_preserve_minmax(relative_change)
         density_line.set_data(x_grid, relative_change)
 
         # 动态调整y轴范围，确保曲线完整显示
@@ -500,5 +611,5 @@ def update(frame):
     return sound_img, scatter, performance_text, density_line
 
 
-ani = animation.FuncAnimation(fig, update, frames=20000, interval=0, blit=False)
+ani = animation.FuncAnimation(fig, update, frames=20000, interval=50, blit=False)  # 50ms间隔，约20fps
 plt.show()
