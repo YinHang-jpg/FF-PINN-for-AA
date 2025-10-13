@@ -81,17 +81,13 @@ class ARFNet(nn.Module):
         # 傅里叶特征权重（多个频率分量）
         self.register_buffer('fourier_weights', torch.randn(1, fourier_features) * k)
         
-        # 主网络
+        # 主网络（大幅简化）
         self.layers = nn.Sequential(
-            nn.Linear(fourier_features * 2, 256),  # sin和cos特征
+            nn.Linear(fourier_features * 2, 64),  # sin和cos特征
             nn.Tanh(),
-            nn.Linear(256, 256),
+            nn.Linear(64, 32),
             nn.Tanh(),
-            nn.Linear(256, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)
+            nn.Linear(32, 1)
         )
 
     def forward(self, x):

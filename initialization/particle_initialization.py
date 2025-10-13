@@ -2,7 +2,7 @@
 import numpy as np
 import math
 
-def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, frequency=10000, sound_speed=340, init_mode='linear'):
+def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, init_mode='linear'):
     """
     初始化粒子群
     
@@ -10,10 +10,8 @@ def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2
     :param domain_size: 模拟域尺寸 (Lx, Ly)，单位：米
     :param diameter: 每个粒子的直径，单位：米
     :param density: 每个粒子的密度，单位：kg/m^3
-    :param frequency: 声波频率，单位：Hz
-    :param sound_speed: 声速，单位：m/s
     :param init_mode: 初始化模式
-        - 'linear': 直线排布（在边界左右两边各扩展1/4个波长）
+        - 'linear': 直线排布（在域内均匀分布）
         - 'random': 在计算域内随机分布
         - 'uniform': 在计算域内均匀分布
         - 'sample': 样例分布（所有粒子竖着堆砌在 x=8.5mm 与 x=25.5mm）
@@ -23,13 +21,9 @@ def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2
     Lx, Ly = domain_size
     
     if init_mode == 'linear':
-        # 直线排布模式：在边界左右两边各扩展1/4个波长来放置粒子
-        wavelength = sound_speed / frequency
-        quarter_wavelength = wavelength / 4
-        
-        # 在扩展长度上均匀分布粒子
-        # 使用endpoint=True确保粒子分布在整个扩展域内，包括边界
-        x_positions = np.linspace(-quarter_wavelength, Lx + quarter_wavelength, N, endpoint=True)
+        # 直线排布模式：在域内均匀分布粒子
+        # 在域内均匀分布粒子，不扩展到域外
+        x_positions = np.linspace(0, Lx, N, endpoint=True)
         y_position = Ly / 2  # y坐标固定在域中心
         positions = np.column_stack((x_positions, np.full(N, y_position)))
         
@@ -175,8 +169,6 @@ def test_initialization_modes():
     domain_size = (0.01, 0.01)  # 1cm x 1cm
     diameter = 2e-6
     density = 2000
-    frequency = 10000
-    sound_speed = 340
     
     # 创建子图
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -186,8 +178,7 @@ def test_initialization_modes():
     for i, (mode, name) in enumerate(zip(modes, mode_names)):
         positions, velocities, radii, mass = initialize_particles(
             N=N, domain_size=domain_size, diameter=diameter, 
-            density=density, frequency=frequency, sound_speed=sound_speed, 
-            init_mode=mode
+            density=density, init_mode=mode
         )
         
         # 绘制粒子位置

@@ -2,7 +2,7 @@
 import numpy as np
 
 frequency = 10000
-sound_pressure_level = 180  # dB
+sound_pressure_level = 168.5  # dB
 
 def spl_to_pressure(spl, reference_pressure=20e-6):
     """

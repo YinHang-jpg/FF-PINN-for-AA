@@ -9,6 +9,7 @@ import os
 import torch
 import json
 import sys
+from scipy.interpolate import PchipInterpolator
 
 # 配置开关 - 使用PINN模型进行力预测，同时开启斯托克斯阻力
 RUN_HEADLESS_BENCHMARK = True  # 关闭渲染与动画，仅计算并在1000步后退出
@@ -16,7 +17,7 @@ USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
 USE_PINN_FORCES = True  # 使用PINN模型预测所有粒子受力
 USE_GRAVITY = False
-USE_STOKES_DRAG = False  # 开启斯托克斯阻力
+USE_STOKES_DRAG = True  # 开启斯托克斯阻力
 USE_AGGLOMERATION = False
 USE_BROWNIAN = False
 USE_ACOUSTIC_WAKE = False  # 关闭，由PINN模型处理
@@ -48,38 +49,92 @@ else:
 from mechanisms.ARF_PINN_x import ARFNet as ARFNetX, Normalizer as NormalizerX
 from mechanisms.ARF_PINN_t import ARFNetT as ARFNetT, Normalizer as NormalizerT
 
-# 导入斯托克斯阻力模块
-from mechanisms.Stokes_drag import apply_stokes_drag
+# 导入Stokes PINN模型
+from mechanisms.STOKES_PINN_x import StokesNetX, Normalizer as StokesNormalizerX
+from mechanisms.STOKES_PINN_t import StokesNetT, Normalizer as StokesNormalizerT
+from mechanisms.STOKES_PINN_v import StokesNetV, Normalizer as StokesNormalizerV
 
-# 仅用于打印：根据当前速度计算每个粒子的斯托克斯阻力（与 mechanisms/Stokes_drag.py 一致）
-def _cunningham_correction_factor(d_p, lambda_g):
-    ratio = d_p / lambda_g
-    exp_term = np.exp(-0.550 * ratio)
-    bracket_term = 2.514 + 0.800 * exp_term
-    return 1.0 + bracket_term * ratio
+def compute_stokes_drag_force_using_pinn(positions, velocities, time, stokes_x_model, stokes_x_normalizer, stokes_t_model, stokes_t_normalizer, stokes_v_model, stokes_v_normalizer):
+    """
+    使用训练好的Stokes PINN模型计算斯托克斯阻力
+    组合公式：F_stokes = F_v(vx) - F_x(x) * F_t(t)
+    """
+    if (stokes_x_model is None or stokes_t_model is None or stokes_v_model is None or
+        stokes_x_normalizer is None or stokes_t_normalizer is None or stokes_v_normalizer is None):
+        print("Stokes PINN模型未完全初始化，无法计算斯托克斯阻力")
+        return np.zeros_like(positions)
+    
+    try:
+        with torch.no_grad():
+            # 准备输入数据
+            x = torch.tensor(positions[:, 0], dtype=torch.float32)
+            vx = torch.tensor(velocities[:, 0], dtype=torch.float32)
+            t = torch.full_like(x, time, dtype=torch.float32)
+            
+            # 归一化输入 - 使用正确的键名
+            # x模型输入：位置x
+            x_min = stokes_x_normalizer.stats['x'][0]
+            x_max = stokes_x_normalizer.stats['x'][1]
+            x_norm = (x - x_min) / (x_max - x_min)
+            x_norm = torch.clamp(x_norm, 0.0, 1.0)
+            
+            # t模型输入：时间t
+            t_min = stokes_t_normalizer.stats['t'][0]
+            t_max = stokes_t_normalizer.stats['t'][1]
+            t_norm = (t - t_min) / (t_max - t_min)
+            t_norm = torch.clamp(t_norm, 0.0, 1.0)
+            
+            # v模型输入：速度vx
+            vx_min = stokes_v_normalizer.stats['vx'][0]
+            vx_max = stokes_v_normalizer.stats['vx'][1]
+            vx_norm = (vx - vx_min) / (vx_max - vx_min)
+            vx_norm = torch.clamp(vx_norm, 0.0, 1.0)
+            
+            # 使用各模型预测
+            fx_spatial_norm = stokes_x_model(x_norm.unsqueeze(1))
+            fx_temporal_norm = stokes_t_model(t_norm.unsqueeze(1))
+            fx_velocity_norm = stokes_v_model(vx_norm.unsqueeze(1))
+            
+            # 反归一化 - 使用正确的键名
+            fx_spatial_mu = stokes_x_normalizer.stats['fx'][0]
+            fx_spatial_sigma = stokes_x_normalizer.stats['fx'][1]
+            fx_spatial = fx_spatial_norm * fx_spatial_sigma + fx_spatial_mu
+            
+            fx_temporal_mu = stokes_t_normalizer.stats['fx'][0]
+            fx_temporal_sigma = stokes_t_normalizer.stats['fx'][1]
+            fx_temporal = fx_temporal_norm * fx_temporal_sigma + fx_temporal_mu
+            
+            fx_velocity_mu = stokes_v_normalizer.stats['fx'][0]
+            fx_velocity_sigma = stokes_v_normalizer.stats['fx'][1]
+            fx_velocity = fx_velocity_norm * fx_velocity_sigma + fx_velocity_mu
+            
+            # 组合公式：F_stokes = F_v(vx) - F_x(x) * F_t(t)
+            # 注意：这里需要确保所有张量形状一致
+            fx_stokes = fx_velocity.squeeze() - fx_spatial.squeeze() * fx_temporal.squeeze()
+            fy_stokes = torch.zeros_like(fx_stokes)  # y方向为零
+            
+            # 转换为numpy数组
+            fx_stokes = fx_stokes.numpy()
+            fy_stokes = fy_stokes.numpy()
+            
+            return np.column_stack([fx_stokes, fy_stokes])
+            
+    except Exception as e:
+        print(f"Stokes PINN模型计算阻力时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return np.zeros_like(positions)
 
-def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, fluid_velocity=None, lambda_g=6.5e-8):
-    N = len(positions)
-    if fluid_velocity is None:
-        fluid_velocity = np.zeros((N, 2))
-    drag_force = np.zeros_like(positions)
-    for i in range(N):
-        d_p = 2.0 * radii[i]
-        C_c = _cunningham_correction_factor(d_p, lambda_g)
-        relative_velocity = velocities[i] - fluid_velocity[i]
-        drag_coeff = 3.0 * np.pi * viscosity * d_p / C_c
-        drag_force[i] = -drag_coeff * relative_velocity
-    return drag_force
-
-def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, time, x_model, x_normalizer, t_model, t_normalizer, print_forces=False):
+def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, time, x_model, x_normalizer, t_model, t_normalizer, stokes_x_model, stokes_x_normalizer, stokes_t_model, stokes_t_normalizer, stokes_v_model, stokes_v_normalizer, print_forces=False):
     """
     使用训练好的PINN模型计算粒子受力
     - x_model: 位置相关的力模型 (ARFNet)
     - t_model: 时间相关的力模型 (ARFNetT)
+    - stokes_*_model: Stokes阻力相关模型
     - print_forces: 是否打印力信息
     """
     if x_model is None or x_normalizer is None or t_model is None or t_normalizer is None:
-        print("PINN模型未完全初始化，无法计算力")
+        print("ARF PINN模型未完全初始化，无法计算力")
         return positions, velocities, None
     
     try:
@@ -122,36 +177,52 @@ def compute_particle_forces_using_pinn(positions, velocities, mass, radii, dt, t
                 time_factor_sigma = 0.7075421214103699
                 time_factor = time_factor_norm * time_factor_sigma + time_factor_mu
             
-            # 组合得到最终的力：F = F_spatial * F_temporal
-            fx = fx_spatial.squeeze() * time_factor.squeeze()
-            fy = torch.zeros_like(fx)  # 假设只有x方向的力
+            # 组合得到ARF力：F_arf = F_spatial * F_temporal
+            fx_arf = fx_spatial.squeeze() * time_factor.squeeze()
+            fy_arf = torch.zeros_like(fx_arf)  # 假设只有x方向的力
+            
+            # 计算Stokes阻力（如果启用）
+            if USE_STOKES_DRAG:
+                stokes_force = compute_stokes_drag_force_using_pinn(
+                    positions, velocities, time, stokes_x_model, stokes_x_normalizer, 
+                    stokes_t_model, stokes_t_normalizer, stokes_v_model, stokes_v_normalizer
+                )
+                fx_stokes = stokes_force[:, 0]
+                fy_stokes = stokes_force[:, 1]
+            else:
+                fx_stokes = np.zeros_like(fx_arf)
+                fy_stokes = np.zeros_like(fx_arf)
             
             # 转换为numpy数组
-            fx = fx.numpy()
-            fy = fy.numpy()
+            fx_arf = fx_arf.numpy()
+            fy_arf = fy_arf.numpy()
+            
+            # 总力 = ARF力 + Stokes阻力
+            fx_total = fx_arf + fx_stokes
+            fy_total = fy_arf + fy_stokes
             
             # 打印力信息（如果需要）
             if print_forces:
-                stokes_force = compute_stokes_drag_force(positions, velocities, radii) if USE_STOKES_DRAG else np.zeros_like(positions)
                 print(f"\n=== 时间步 {time:.6f}s 的粒子受力 ===")
-                print("粒子ID | X位置(mm) | Y位置(mm) | PINN Fx(pN) | PINN Fy(pN) | Stokes Fx(pN) | Stokes Fy(pN)")
-                print("-" * 110)
+                print("粒子ID | X位置(mm) | Y位置(mm) | ARF Fx(pN) | ARF Fy(pN) | Stokes Fx(pN) | Stokes Fy(pN) | 总Fx(pN) | 总Fy(pN)")
+                print("-" * 140)
                 for i in range(len(positions)):
-                    print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {fx[i]*1e12:12.3e} | {fy[i]*1e12:12.3e} | {stokes_force[i,0]*1e12:13.3e} | {stokes_force[i,1]*1e12:13.3e}")
+                    print(f"{i:6d} | {positions[i,0]*1000:8.3f} | {positions[i,1]*1000:8.3f} | {fx_arf[i]*1e12:10.3e} | {fy_arf[i]*1e12:10.3e} | {fx_stokes[i]*1e12:12.3e} | {fy_stokes[i]*1e12:12.3e} | {fx_total[i]*1e12:9.3e} | {fy_total[i]*1e12:9.3e}")
                 print(f"总粒子数: {len(positions)}")
-                print(f"PINN 平均Fx: {np.mean(fx)*1e12:.3e} pN | 范围: [{np.min(fx)*1e12:.3e}, {np.max(fx)*1e12:.3e}] pN")
+                print(f"ARF 平均Fx: {np.mean(fx_arf)*1e12:.3e} pN | 范围: [{np.min(fx_arf)*1e12:.3e}, {np.max(fx_arf)*1e12:.3e}] pN")
                 if USE_STOKES_DRAG:
-                    print(f"Stokes 平均Fx: {np.mean(stokes_force[:,0])*1e12:.3e} pN | 范围: [{np.min(stokes_force[:,0])*1e12:.3e}, {np.max(stokes_force[:,0])*1e12:.3e}] pN")
-                print("=" * 110)
+                    print(f"Stokes 平均Fx: {np.mean(fx_stokes)*1e12:.3e} pN | 范围: [{np.min(fx_stokes)*1e12:.3e}, {np.max(fx_stokes)*1e12:.3e}] pN")
+                print(f"总力 平均Fx: {np.mean(fx_total)*1e12:.3e} pN | 范围: [{np.min(fx_total)*1e12:.3e}, {np.max(fx_total)*1e12:.3e}] pN")
+                print("=" * 140)
             
             # 计算加速度
-            accelerations = np.column_stack([fx, fy]) / mass[:, None]
+            accelerations = np.column_stack([fx_total, fy_total]) / mass[:, None]
             
             # 更新速度和位置
             velocities = velocities + accelerations * dt
             positions = positions + velocities * dt
             
-            return positions, velocities, (fx, fy)
+            return positions, velocities, (fx_total, fy_total)
             
     except Exception as e:
         print(f"PINN模型计算力时出错: {e}")
@@ -198,45 +269,83 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=100, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
 # 初始化PINN模型
 print("正在加载训练好的PINN模型...")
 try:
-    # 初始化x模型（位置相关）
+    # 初始化ARF x模型（位置相关）
     x_model = ARFNetX(fourier_features=32)
     x_model_path = 'PINN/arf_model_x.pth'
     if os.path.exists(x_model_path):
         x_model.load_state_dict(torch.load(x_model_path, map_location='cpu', weights_only=True))
-        print(f"成功加载x模型权重: {x_model_path}")
+        print(f"成功加载ARF x模型权重: {x_model_path}")
     else:
-        print(f"警告: x模型文件 {x_model_path} 不存在")
+        print(f"警告: ARF x模型文件 {x_model_path} 不存在")
         x_model = None
     
-    # 初始化t模型（时间相关）
+    # 初始化ARF t模型（时间相关）
     t_model = ARFNetT(period_seconds=1.0 / frequency)
     t_model_path = 'PINN/arf_model_t.pth'
     if os.path.exists(t_model_path):
         t_model.load_state_dict(torch.load(t_model_path, map_location='cpu', weights_only=True))
-        print(f"成功加载t模型权重: {t_model_path}")
+        print(f"成功加载ARF t模型权重: {t_model_path}")
     else:
-        print(f"警告: t模型文件 {t_model_path} 不存在")
+        print(f"警告: ARF t模型文件 {t_model_path} 不存在")
         t_model = None
     
-    # 加载归一化参数（x模型使用PINN/arf_model_x_normalization_params.json）
+    # 初始化Stokes x模型（位置相关）
+    stokes_x_model = StokesNetX(fourier_features=32)
+    stokes_x_model_path = 'PINN/stokes_model_x.pth'
+    if os.path.exists(stokes_x_model_path):
+        stokes_x_model.load_state_dict(torch.load(stokes_x_model_path, map_location='cpu', weights_only=True))
+        print(f"成功加载Stokes x模型权重: {stokes_x_model_path}")
+    else:
+        print(f"警告: Stokes x模型文件 {stokes_x_model_path} 不存在")
+        stokes_x_model = None
+    
+    # 初始化Stokes t模型（时间相关）
+    stokes_t_model = StokesNetT(period_seconds=1.0 / frequency)
+    stokes_t_model_path = 'PINN/stokes_model_t.pth'
+    if os.path.exists(stokes_t_model_path):
+        stokes_t_model.load_state_dict(torch.load(stokes_t_model_path, map_location='cpu', weights_only=True))
+        print(f"成功加载Stokes t模型权重: {stokes_t_model_path}")
+    else:
+        print(f"警告: Stokes t模型文件 {stokes_t_model_path} 不存在")
+        stokes_t_model = None
+    
+    # 初始化Stokes v模型（速度相关）
+    stokes_v_model = StokesNetV()
+    stokes_v_model_path = 'PINN/stokes_model_v.pth'
+    if os.path.exists(stokes_v_model_path):
+        stokes_v_model.load_state_dict(torch.load(stokes_v_model_path, map_location='cpu', weights_only=True))
+        print(f"成功加载Stokes v模型权重: {stokes_v_model_path}")
+    else:
+        print(f"警告: Stokes v模型文件 {stokes_v_model_path} 不存在")
+        stokes_v_model = None
+    
+    # 加载归一化参数
     x_norm_path = 'PINN/arf_model_x_normalization_params.json'
-    t_norm_path = 'arf_model_t_normalization_params.json'
+    t_norm_path = 'PINN/arf_model_t_normalization_params.json'
+    stokes_x_norm_path = 'PINN/stokes_model_x_normalization_params.json'
+    stokes_t_norm_path = 'PINN/stokes_model_t_normalization_params.json'
+    stokes_v_norm_path = 'PINN/stokes_model_v_normalization_params.json'
     
     x_normalizer = None
+    t_normalizer = None
+    stokes_x_normalizer = None
+    stokes_t_normalizer = None
+    stokes_v_normalizer = None
+    
     # 默认值（当文件缺失或读取失败时使用）
     X_MIN = -0.0255
     X_MAX = 0.0255
     FORCE_MU = 4.5863430241099845e-12
     FORCE_SIGMA = 1.4498783250382896e-11
-    t_normalizer = None
     
+    # 加载ARF模型归一化参数
     if os.path.exists(x_norm_path):
         x_normalizer = NormalizerX()
         x_normalizer.load(x_norm_path, device='cpu')
@@ -250,23 +359,69 @@ try:
                 FORCE_MU = float(_params['force_mu'])
             if 'force_sigma' in _params:
                 FORCE_SIGMA = max(float(_params['force_sigma']), 1e-30)
-            print(f"成功加载x模型归一化参数: {x_norm_path}")
+            print(f"成功加载ARF x模型归一化参数: {x_norm_path}")
             print(f"x范围: [{X_MIN*1000:.1f}, {X_MAX*1000:.1f}] mm | 力均值/方差: {FORCE_MU:.3e}/{FORCE_SIGMA:.3e}")
         except Exception as _e:
-            print(f"读取x归一化参数文件时出错: {_e}，使用默认参数")
+            print(f"读取ARF x归一化参数文件时出错: {_e}，使用默认参数")
     
     if os.path.exists(t_norm_path):
         t_normalizer = NormalizerT()
         t_normalizer.load(t_norm_path, device='cpu')
-        print(f"成功加载t模型归一化参数: {t_norm_path}")
+        print(f"成功加载ARF t模型归一化参数: {t_norm_path}")
+    
+    # 加载Stokes模型归一化参数
+    if os.path.exists(stokes_x_norm_path):
+        stokes_x_normalizer = StokesNormalizerX()
+        # 手动加载并转换格式
+        with open(stokes_x_norm_path, 'r') as f:
+            params = json.load(f)
+        stokes_x_normalizer.stats = {
+            'x': (torch.tensor(params['x_min'], dtype=torch.float32), 
+                  torch.tensor(params['x_max'] - params['x_min'], dtype=torch.float32)),
+            'fx': (torch.tensor(params['force_mu'], dtype=torch.float32), 
+                   torch.tensor(params['force_sigma'], dtype=torch.float32))
+        }
+        print(f"成功加载Stokes x模型归一化参数: {stokes_x_norm_path}")
+    
+    if os.path.exists(stokes_t_norm_path):
+        stokes_t_normalizer = StokesNormalizerT()
+        # 手动加载并转换格式
+        with open(stokes_t_norm_path, 'r') as f:
+            params = json.load(f)
+        stokes_t_normalizer.stats = {
+            't': (torch.tensor(params['t_min'], dtype=torch.float32), 
+                  torch.tensor(params['t_max'] - params['t_min'], dtype=torch.float32)),
+            'fx': (torch.tensor(params['force_mu'], dtype=torch.float32), 
+                   torch.tensor(params['force_sigma'], dtype=torch.float32))
+        }
+        print(f"成功加载Stokes t模型归一化参数: {stokes_t_norm_path}")
+    
+    if os.path.exists(stokes_v_norm_path):
+        stokes_v_normalizer = StokesNormalizerV()
+        # 手动加载并转换格式
+        with open(stokes_v_norm_path, 'r') as f:
+            params = json.load(f)
+        stokes_v_normalizer.stats = {
+            'vx': (torch.tensor(params['vx_min'], dtype=torch.float32), 
+                   torch.tensor(params['vx_max'] - params['vx_min'], dtype=torch.float32)),
+            'fx': (torch.tensor(params['force_mu'], dtype=torch.float32), 
+                   torch.tensor(params['force_sigma'], dtype=torch.float32))
+        }
+        print(f"成功加载Stokes v模型归一化参数: {stokes_v_norm_path}")
     
     # 设置为评估模式
     if x_model is not None:
         x_model.eval()
     if t_model is not None:
         t_model.eval()
+    if stokes_x_model is not None:
+        stokes_x_model.eval()
+    if stokes_t_model is not None:
+        stokes_t_model.eval()
+    if stokes_v_model is not None:
+        stokes_v_model.eval()
     
-    print("PINN模型初始化完成")
+    print("所有PINN模型初始化完成")
     
 except Exception as e:
     print(f"PINN模型初始化失败: {e}")
@@ -275,13 +430,19 @@ except Exception as e:
     t_model = None
     x_normalizer = None
     t_normalizer = None
+    stokes_x_model = None
+    stokes_t_model = None
+    stokes_v_model = None
+    stokes_x_normalizer = None
+    stokes_t_normalizer = None
+    stokes_v_normalizer = None
 
 # 移除测试粒子相关代码，专注于PINN模型预测
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
-    steps = 100000
-    dt = 1e-7
+    steps = 10000
+    dt = 1e-6
     print(f"Headless benchmark started: steps={steps}, dt={dt}")
     print("开始计算...")
     
@@ -294,15 +455,13 @@ if RUN_HEADLESS_BENCHMARK:
         simulation_time += dt
         t = simulation_time
 
-        # 力学更新：PINN
+        # 力学更新：PINN（包含ARF和Stokes阻力）
         if USE_PINN_FORCES and (x_model is not None and t_model is not None):
             positions, velocities, _ = compute_particle_forces_using_pinn(
-                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
+                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, 
+                stokes_x_model, stokes_x_normalizer, stokes_t_model, stokes_t_normalizer, 
+                stokes_v_model, stokes_v_normalizer, print_forces=False
             )
-
-        # 斯托克斯阻力
-        if USE_STOKES_DRAG:
-            positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
         
         # 每10000步打印一次进度
         if (step + 1) % 10000 == 0:
@@ -326,11 +485,27 @@ if RUN_HEADLESS_BENCHMARK:
     print(f"最终仿真时间: {simulation_time:.6f} s")
 
     # 计算完成后，绘制一次静态图（粒子位置 + 密度分布），不保存，仅展示
-    def _compute_density(_x_positions_mm, _x_grid_mm, bandwidth_mm=1.5):
-        d = np.zeros_like(_x_grid_mm)
-        for _x in _x_positions_mm:
-            d += np.exp(-0.5 * ((_x_grid_mm - _x) / bandwidth_mm) ** 2)
-        return d
+    def _calculate_concentration_distribution_h(positions, x_grid):
+        """基于粒子到参考位置的距离计算浓度分布（headless版本）"""
+        try:
+            current_positions = positions[:, 0] * 1000.0
+            current_positions = current_positions[np.isfinite(current_positions)]
+            
+            if len(current_positions) == 0:
+                return np.zeros_like(x_grid)
+            
+            concentrations = np.zeros_like(x_grid)
+            
+            for i, x_pos in enumerate(x_grid):
+                distances = np.abs(current_positions - x_pos)
+                sigma = 0.2  # 浓度分布的标准差（mm）
+                concentration = np.sum(np.exp(-distances**2 / (2 * sigma**2)))
+                concentrations[i] = concentration
+            
+            return concentrations
+        except Exception as e:
+            print(f"浓度计算错误: {e}")
+            return np.zeros_like(x_grid)
 
     fig_h, (ax_p_h, ax_d_h) = plt.subplots(1, 2, figsize=(16, 6))
 
@@ -342,21 +517,36 @@ if RUN_HEADLESS_BENCHMARK:
     ax_p_h.set_ylabel("y (mm)")
     ax_p_h.scatter(positions[:, 0] * 1000, positions[:, 1] * 1000, s=(radii * 1e6 * 4)**2, c='blue', alpha=0.6)
 
-    # 右图：密度分布（相对变化百分比，与动画一致）
-    x_grid_h = np.linspace(0.0, domain_size[0] * 1000.0, 200)
-    initial_x_mm_h = initial_positions[:, 0] * 1000.0
-    current_x_mm = positions[:, 0] * 1000.0
-    initial_density_h = _compute_density(initial_x_mm_h, x_grid_h, bandwidth_mm=1.5)
-    baseline_h = np.mean(initial_density_h)
-    current_density_h = _compute_density(current_x_mm, x_grid_h, bandwidth_mm=1.5)
-    relative_change_h = (current_density_h - baseline_h) / baseline_h * 100.0
-    ax_d_h.plot(x_grid_h, relative_change_h, 'b-', linewidth=2, label='Relative Change (%)')
-    # 动态y轴范围（10%边距）
-    y_min_h = float(np.min(relative_change_h))
-    y_max_h = float(np.max(relative_change_h))
-    y_margin_h = (y_max_h - y_min_h) * 0.1 if y_max_h > y_min_h else 1.0
-    ax_d_h.set_ylim(y_min_h - y_margin_h, y_max_h + y_margin_h)
-    ax_d_h.set_title("Particle Density Distribution (after computation)")
+    # 右图：密度分布（使用新的浓度计算方式）
+    x_grid_h = np.linspace(0.0, domain_size[0] * 1000.0, 100)
+    initial_concentrations_h = _calculate_concentration_distribution_h(initial_positions, x_grid_h)
+    current_concentrations_h = _calculate_concentration_distribution_h(positions, x_grid_h)
+    
+    # 计算相对变化
+    with np.errstate(divide='ignore', invalid='ignore'):
+        relative_change_h = (current_concentrations_h - initial_concentrations_h) / initial_concentrations_h * 100.0
+        relative_change_h = np.nan_to_num(relative_change_h, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # 绘制柱状图和平滑曲线
+    ax_d_h.bar(x_grid_h, relative_change_h, width=0.34, align='center', alpha=0.8, label='Concentration Change')
+    
+    # 添加平滑曲线
+    try:
+        pchip = PchipInterpolator(x_grid_h, relative_change_h, extrapolate=False)
+        x_smooth_h = np.linspace(x_grid_h[0], x_grid_h[-1], max(50, 4 * len(x_grid_h)))
+        y_smooth_h = pchip(x_smooth_h)
+        ax_d_h.plot(x_smooth_h, y_smooth_h, 'r-', linewidth=2, label='Smoothed')
+    except Exception:
+        ax_d_h.plot(x_grid_h, relative_change_h, 'r-', linewidth=2, label='Smoothed')
+    
+    # 动态y轴范围
+    if np.any(np.isfinite(relative_change_h)):
+        y_min_h = float(np.nanmin(relative_change_h))
+        y_max_h = float(np.nanmax(relative_change_h))
+        y_margin_h = (y_max_h - y_min_h) * 0.1 if y_max_h > y_min_h else 1.0
+        ax_d_h.set_ylim(y_min_h - y_margin_h, y_max_h + y_margin_h)
+    
+    ax_d_h.set_title("Particle Density Change Rate (after computation)")
     ax_d_h.set_xlabel("x (mm)")
     ax_d_h.set_ylabel("Relative Change (%)")
     ax_d_h.grid(True, alpha=0.3)
@@ -414,29 +604,56 @@ performance_text = ax_particles.text(0.02, 0.98, '', transform=ax_particles.tran
                           verticalalignment='top', fontsize=10,
                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-# 初始化密度分布曲线（使用核密度估计获得平滑曲线）
-# 创建x坐标网格（单位：mm）
-x_grid = np.linspace(0.0, domain_size[0] * 1000.0, 200)
-# 计算初始粒子的x坐标（单位：mm）
-initial_x_positions = positions[:, 0] * 1000.0
+# 初始化基于距离的浓度统计机制（参考comsol_visualizer.py）
+# 三个参考位置：x=0mm, x=8.5mm, x=25.5mm
+reference_positions = np.array([0.0, 8.5, 25.5])  # mm
+num_references = len(reference_positions)
 
-# 使用高斯核密度估计计算初始密度分布
-def compute_density(x_positions, x_grid, bandwidth=1.0):
-    """使用高斯核计算密度分布"""
-    density = np.zeros_like(x_grid)
-    for x in x_positions:
-        # 高斯核：exp(-(x-x_i)^2 / (2*bandwidth^2))
-        density += np.exp(-0.5 * ((x_grid - x) / bandwidth) ** 2)
-    return density
+# 浓度统计参数
+concentration_scale = 100.0  # 浓度缩放因子
+distance_weight = 1.0  # 距离权重
+baseline_concentration = 0.0  # 基准浓度（相对变化）
 
-# 计算初始密度分布
-initial_density = compute_density(initial_x_positions, x_grid, bandwidth=1.5)
-# 归一化到相对变化百分比
-baseline = np.mean(initial_density)
-initial_relative = (initial_density - baseline) / baseline * 100.0
+# 创建x轴网格用于显示浓度分布
+x_grid = np.linspace(0.0, domain_size[0] * 1000.0, 100)  # 100个点用于平滑显示
+concentration_values = np.zeros_like(x_grid)
 
-# 绘制初始密度曲线
-density_line, = ax_density.plot(x_grid, initial_relative, 'b-', linewidth=2, label='Relative change')
+def calculate_concentration_distribution(positions, x_grid):
+    """基于粒子到参考位置的距离计算浓度分布"""
+    try:
+        # 获取当前帧的粒子位置（单位：mm）
+        current_positions = positions[:, 0] * 1000.0
+        current_positions = current_positions[np.isfinite(current_positions)]
+        
+        if len(current_positions) == 0:
+            return np.zeros_like(x_grid)
+        
+        # 计算每个x_grid位置处的浓度
+        concentrations = np.zeros_like(x_grid)
+        
+        for i, x_pos in enumerate(x_grid):
+            # 计算所有粒子到当前x位置的距离
+            distances = np.abs(current_positions - x_pos)
+            
+            # 浓度计算：距离越近，浓度越高
+            # 使用高斯函数形式的浓度分布
+            sigma = 0.2  # 浓度分布的标准差（mm）
+            concentration = np.sum(np.exp(-distances**2 / (2 * sigma**2)))
+            
+            concentrations[i] = concentration
+        
+        return concentrations
+    except Exception as e:
+        print(f"浓度计算错误: {e}")
+        return np.zeros_like(x_grid)
+
+# 计算初始浓度分布
+initial_concentrations = calculate_concentration_distribution(positions, x_grid)
+baseline_concentration = np.mean(initial_concentrations)
+
+# 初始化柱状图和平滑曲线
+bars = ax_density.bar(x_grid, [0]*len(x_grid), width=0.34, align='center', alpha=0.8, label='Concentration Change')
+density_line, = ax_density.plot([], [], 'r-', linewidth=2, label='Smoothed')
 ax_density.legend()
 
 
@@ -486,22 +703,13 @@ def update(frame):
     if frame == 5 and not step_timing_printed:
         t1 = time.perf_counter()
 
-    # 使用PINN模型计算粒子受力
+    # 使用PINN模型计算粒子受力（包含ARF和Stokes阻力）
     if USE_PINN_FORCES:
         if x_model is not None and t_model is not None:
-            # 使用训练好的PINN模型计算粒子受力
-            # 暂时禁用打印机制
-            # if frame % 100 == 0:  # 每100帧打印一次状态和力信息
-            #     print(f"使用PINN模型计算粒子受力 - 时间: {t:.6f}s, 粒子数: {len(positions)}")
-            #     positions, velocities, forces = compute_particle_forces_using_pinn(
-            #         positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=True
-            #     )
-            # else:
-            #     positions, velocities, forces = compute_particle_forces_using_pinn(
-            #         positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
-            #     )
             positions, velocities, forces = compute_particle_forces_using_pinn(
-                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, print_forces=False
+                positions, velocities, mass, radii, dt, t, x_model, x_normalizer, t_model, t_normalizer, 
+                stokes_x_model, stokes_x_normalizer, stokes_t_model, stokes_t_normalizer, 
+                stokes_v_model, stokes_v_normalizer, print_forces=False
             )
         else:
             # 暂时禁用警告打印
@@ -509,17 +717,9 @@ def update(frame):
             #     print("警告: PINN模型未完全初始化，跳过力计算")
             pass  # 不施加任何力，保持原有运动
     
-    # 计时：PINN计算结束，斯托克斯阻力开始
+    # 计时：PINN计算结束，可视化更新开始
     if frame == 5 and not step_timing_printed:
         t2 = time.perf_counter()
-    
-    # 应用斯托克斯阻力
-    if USE_STOKES_DRAG:
-        positions, velocities = apply_stokes_drag(positions, velocities, radii, mass, dt)
-    
-    # 计时：斯托克斯阻力结束，可视化更新开始
-    if frame == 5 and not step_timing_printed:
-        t3 = time.perf_counter()
 
     # 更新声场 & 粒子位置（仅在需要渲染的帧进行可视化更新）
     if should_render:
@@ -530,38 +730,64 @@ def update(frame):
     
     # 计时：声场和散点图更新结束，密度计算开始
     if frame == 5 and not step_timing_printed:
-        t4 = time.perf_counter()
+        t3 = time.perf_counter()
     
     if should_render:
-        # 更新密度分布曲线（使用核密度估计）
-        current_x_positions = positions[:, 0] * 1000.0
-        current_density = compute_density(current_x_positions, x_grid, bandwidth=1.5)
-        relative_change = (current_density - baseline) / baseline * 100.0
-        density_line.set_data(x_grid, relative_change)
-
-        # 动态调整y轴范围，确保曲线完整显示
-        y_min = np.min(relative_change)
-        y_max = np.max(relative_change)
-        y_margin = (y_max - y_min) * 0.1  # 添加10%的边距
-        ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
+        # 更新基于距离的浓度分布
+        current_concentrations = calculate_concentration_distribution(positions, x_grid)
         
-        ax_density.set_title(f"Particle Density Distribution (t = {t:.6f} s)")
+        # 计算相对变化
+        with np.errstate(divide='ignore', invalid='ignore'):
+            relative_change = (current_concentrations - initial_concentrations) / initial_concentrations * 100.0
+            relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 更新每个bar的高度
+        for rect, h in zip(bars, relative_change):
+            rect.set_height(h)
+
+        # 更新平滑曲线（PCHIP 连接柱顶）
+        try:
+            pchip = PchipInterpolator(x_grid, relative_change, extrapolate=False)
+            x_smooth = np.linspace(x_grid[0], x_grid[-1], max(50, 4 * len(x_grid)))
+            y_smooth = pchip(x_smooth)
+            density_line.set_data(x_smooth, y_smooth)
+        except Exception:
+            density_line.set_data(x_grid, relative_change)
+
+        # 动态调整y轴范围
+        if np.any(np.isfinite(relative_change)):
+            y_min = float(np.nanmin(relative_change))
+            y_max = float(np.nanmax(relative_change))
+            y_margin = (y_max - y_min) * 0.1 if y_max > y_min else 1.0
+            ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
+        
+        ax_density.set_title(f"Particle Density Change Rate (t = {t:.6f} s)")
     
     # 计时：密度计算结束，性能显示开始
     if frame == 5 and not step_timing_printed:
-        t5 = time.perf_counter()
+        t4 = time.perf_counter()
 
 
     
     # 每0.01s保存一次密度分布图，从0.01s到0.2s（仅在渲染帧进行保存与绘制）
     if should_render:
         if t >= 0.01 and t <= 0.2 and (t - last_save_time) >= 0.01:
-            # 创建密度分布图
+            # 创建密度分布图（使用新的浓度计算方式）
             plt.figure(figsize=(12, 8))
-            plt.plot(x_grid, relative_change, 'b-', linewidth=2, label='Relative Change (%)')
+            plt.bar(x_grid, relative_change, width=0.34, align='center', alpha=0.8, label='Concentration Change')
+            
+            # 添加平滑曲线
+            try:
+                pchip = PchipInterpolator(x_grid, relative_change, extrapolate=False)
+                x_smooth = np.linspace(x_grid[0], x_grid[-1], max(50, 4 * len(x_grid)))
+                y_smooth = pchip(x_smooth)
+                plt.plot(x_smooth, y_smooth, 'r-', linewidth=2, label='Smoothed')
+            except Exception:
+                plt.plot(x_grid, relative_change, 'r-', linewidth=2, label='Smoothed')
+            
             plt.xlabel('x (mm)')
             plt.ylabel('Relative Change (%)')
-            plt.title(f'Particle Density Distribution at t = {t:.6f} s')
+            plt.title(f'Particle Density Change Rate at t = {t:.6f} s')
             plt.grid(True, alpha=0.3)
             plt.legend()
             
@@ -573,21 +799,21 @@ def update(frame):
             last_save_time = t  # 更新上次保存时间
 
     # 更新性能信息显示
-    pinn_status = "✓ PINN Active" if (x_model is not None and t_model is not None) else "✗ PINN Inactive"
-    stokes_status = "✓ Stokes Drag Active" if USE_STOKES_DRAG else "✗ Stokes Drag Inactive"
+    arf_status = "✓ ARF Active" if (x_model is not None and t_model is not None) else "✗ ARF Inactive"
+    stokes_status = "✓ Stokes Active" if (stokes_x_model is not None and stokes_t_model is not None and stokes_v_model is not None) else "✗ Stokes Inactive"
     if should_render:
         performance_text.set_text(
             f'Simulation Time: {t:.6f} s\n'
             f'FPS: {performance_data["fps"]:.1f}\n'
             f'Frame Time: {performance_data["frame_time"]:.1f}ms\n'
             f'Particles: {performance_data["particle_count"]}\n'
-            f'PINN Models: {pinn_status}\n'
-            f'Stokes Drag: {stokes_status}'
+            f'ARF Models: {arf_status}\n'
+            f'Stokes Models: {stokes_status}'
         )
     
     # 计时：性能显示结束
     if frame == 5 and not step_timing_printed:
-        t6 = time.perf_counter()
+        t5 = time.perf_counter()
     
     # 触发一次立即绘制并测量（仅在第5帧做一次）
     if frame == 5 and not step_timing_printed:
@@ -606,23 +832,20 @@ def update(frame):
         t3_l = locals().get('t3', t2_l)
         t4_l = locals().get('t4', t3_l)
         t5_l = locals().get('t5', t4_l)
-        t6_l = locals().get('t6', t5_l)
 
         t_sound = ms(t1_l - t0)
         t_arf = ms(t2_l - t1_l)
-        t_drag = ms(t3_l - t2_l)
-        t_scatter = ms(t4_l - t3_l)
-        t_density = ms(t5_l - t4_l)
-        t_perf = ms(t6_l - t5_l)
+        t_scatter = ms(t3_l - t2_l)
+        t_density = ms(t4_l - t3_l)
+        t_perf = ms(t5_l - t4_l)
         draw_ms = ms(pending_draw_measurement['draw_end'] - pending_draw_measurement['draw_start'])
-        total_ms = t_sound + t_arf + t_drag + t_scatter + t_density + t_perf + draw_ms
+        total_ms = t_sound + t_arf + t_scatter + t_density + t_perf + draw_ms
 
         print("\nStep timing breakdown (frame 5):")
         print(f"  Particles:          {len(positions)}")
         print(f"  Sound field update: {t_sound:.2f} ms")
         print(f"  PINN computation:   {t_arf:.2f} ms")
-        print(f"  Stokes drag:        {t_drag:.2f} ms")
-        print(f"  Scatter update:     {t_scatter:.2f} ms")
+        print(f"  Visualization:      {t_scatter:.2f} ms")
         print(f"  Density calculation:{t_density:.2f} ms")
         print(f"  Perf display:       {t_perf:.2f} ms")
         print(f"  Render (draw):      {draw_ms:.2f} ms")

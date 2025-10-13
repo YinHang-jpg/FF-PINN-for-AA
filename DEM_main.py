@@ -12,12 +12,13 @@ import sys
 from scipy.stats import gaussian_kde
 from scipy.signal import savgol_filter
 from scipy.optimize import minimize_scalar
+from scipy.interpolate import PchipInterpolator
 
 # 配置开关 - 使用ARF物理公式进行力预测，同时开启斯托克斯阻力
 RUN_HEADLESS_BENCHMARK = True # 关闭渲染与动画，仅计算并在1000步后退出
 USE_TRAVELING_WAVE = False
 USE_TEST_PARTICLE = False
-USE_ARF_FORCES = True  # 使用ARF物理公式计算所有粒子受力
+USE_ARF_FORCES = False  # 使用ARF物理公式计算所有粒子受力
 USE_GRAVITY = False
 USE_STOKES_DRAG = True # 开启斯托克斯阻力
 USE_AGGLOMERATION = False
@@ -57,10 +58,15 @@ from mechanisms.ARF import compute_pressure_gradient_and_apply_arf
 from mechanisms.Stokes_drag import apply_stokes_drag, cunningham_correction_factor
 
 # 仅用于打印：根据当前速度计算每个粒子的斯托克斯阻力（与 mechanisms/Stokes_drag.py 一致）
-def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, fluid_velocity=None, lambda_g=6.5e-8):
+def compute_stokes_drag_force(positions, velocities, radii, viscosity=1.79e-5, fluid_velocity=None, lambda_g=6.5e-8, time=0.0, use_sound_velocity=True):
     N = len(positions)
     if fluid_velocity is None:
-        fluid_velocity = np.zeros((N, 2))
+        if use_sound_velocity:
+            # 使用声波影响下的空气速度
+            from mechanisms.Stokes_drag import compute_air_velocity_due_to_sound
+            fluid_velocity = compute_air_velocity_due_to_sound(positions, time)
+        else:
+            fluid_velocity = np.zeros((N, 2))
     drag_force = np.zeros_like(positions)
     for i in range(N):
         d_p = 2.0 * radii[i]
@@ -109,7 +115,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=1000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -128,10 +134,16 @@ except Exception as e:
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
-    steps = 1
-    dt = 1e-18
+    steps = 160000
+    dt = 1e-6
     print(f"Headless benchmark started: steps={steps}, dt={dt}")
     print("开始计算...")
+    
+    # 初始化7分箱设置（与主程序一致）
+    comsol_edges_bench = np.array([-14.875, -10.625, -6.375, -2.125, 2.125, 6.375, 10.625, 14.875])
+    edges_bench = comsol_edges_bench + 17.0  # 平移到DEM坐标系
+    num_bins_bench = len(edges_bench) - 1  # 7个分箱
+    M_total_bench = int(positions.shape[0] * 0.875)  # 只统计87.5%的粒子
     
     # 整体计算时间计时
     total_start_time = time.perf_counter()
@@ -152,7 +164,9 @@ if RUN_HEADLESS_BENCHMARK:
             total_force += arf_force
 
         if USE_STOKES_DRAG:
-            drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt)
+            drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt, 
+                                         time=t, use_sound_velocity=True, 
+                                         frequency=frequency, sound_pressure_level=sound_pressure_level)
             total_force += drag_force
 
         # 显式欧拉积分（统一在主循环中进行）
@@ -160,14 +174,79 @@ if RUN_HEADLESS_BENCHMARK:
         velocities = velocities + accelerations * dt
         positions = positions + velocities * dt
 
-        # 每10000步打印一次进度
-        if (step + 1) % 10000 == 0:
+        # 在第100个时步打印详细信息
+        if step == 99:  # 第100个时步（从0开始计数）
+            print(f"\n=== 第100个时步详细信息 (t = {t:.6f} s) ===")
+            
+            # 打印所有粒子的当前速度
+            print(f"所有粒子当前速度 (m/s):")
+            for i in range(min(10, len(velocities))):  # 只显示前10个粒子
+                print(f"  粒子 {i}: vx = {velocities[i, 0]:.6e}, vy = {velocities[i, 1]:.6e}")
+            if len(velocities) > 10:
+                print(f"  ... (还有 {len(velocities) - 10} 个粒子)")
+            
+            # 计算并打印气流速度
+            from mechanisms.Stokes_drag import compute_air_velocity_due_to_sound
+            air_velocity = compute_air_velocity_due_to_sound(
+                positions, t, frequency, sound_pressure_level
+            )
+            print(f"\n气流速度 (m/s):")
+            for i in range(min(10, len(air_velocity))):  # 只显示前10个粒子位置的气流速度
+                print(f"  位置 {i}: ux = {air_velocity[i, 0]:.6e}, uy = {air_velocity[i, 1]:.6e}")
+            if len(air_velocity) > 10:
+                print(f"  ... (还有 {len(air_velocity) - 10} 个位置)")
+            
+            # 打印压力梯度力（ARF力）
+            if USE_ARF_FORCES:
+                arf_force = compute_pressure_gradient_and_apply_arf(positions, radii, t)
+                print(f"\n压力梯度力/ARF力 (N):")
+                for i in range(min(10, len(arf_force))):  # 只显示前10个粒子
+                    print(f"  粒子 {i}: Fx = {arf_force[i, 0]:.6e}, Fy = {arf_force[i, 1]:.6e}")
+                if len(arf_force) > 10:
+                    print(f"  ... (还有 {len(arf_force) - 10} 个粒子)")
+            else:
+                print(f"\n压力梯度力/ARF力: 未启用")
+            
+            # 打印斯托克斯阻力
+            if USE_STOKES_DRAG:
+                drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt, 
+                                             time=t, use_sound_velocity=True, 
+                                             frequency=frequency, sound_pressure_level=sound_pressure_level)
+                print(f"\n斯托克斯阻力 (N):")
+                for i in range(min(10, len(drag_force))):  # 只显示前10个粒子
+                    print(f"  粒子 {i}: Fx = {drag_force[i, 0]:.6e}, Fy = {drag_force[i, 1]:.6e}")
+                if len(drag_force) > 10:
+                    print(f"  ... (还有 {len(drag_force) - 10} 个粒子)")
+            else:
+                print(f"\n斯托克斯阻力: 未启用")
+            
+            # 打印总力
+            print(f"\n总力 (N):")
+            for i in range(min(10, len(total_force))):  # 只显示前10个粒子
+                print(f"  粒子 {i}: Fx = {total_force[i, 0]:.6e}, Fy = {total_force[i, 1]:.6e}")
+            if len(total_force) > 10:
+                print(f"  ... (还有 {len(total_force) - 10} 个粒子)")
+            
+            # 打印相对速度（粒子速度 - 气流速度）
+            relative_velocity = velocities - air_velocity
+            print(f"\n相对速度 (粒子速度 - 气流速度) (m/s):")
+            for i in range(min(10, len(relative_velocity))):  # 只显示前10个粒子
+                print(f"  粒子 {i}: vx_rel = {relative_velocity[i, 0]:.6e}, vy_rel = {relative_velocity[i, 1]:.6e}")
+            if len(relative_velocity) > 10:
+                print(f"  ... (还有 {len(relative_velocity) - 10} 个粒子)")
+            
+            print(f"=== 第100个时步详细信息结束 ===\n")
+
+        # 每10%进度打印一次
+        progress_interval = max(1, steps // 10)  # 计算10%的步数间隔
+        if (step + 1) % progress_interval == 0:
             current_time = time.perf_counter()
             elapsed_so_far = current_time - total_start_time
             progress = (step + 1) / steps * 100
             print(f"进度: {step + 1}/{steps} ({progress:.1f}%) - 已用时: {elapsed_so_far:.2f}s")
         if step == steps-1:
-            print(positions)
+            # 记录最终粒子位置用于分箱统计
+            final_positions = positions.copy()
     # 计算总耗时
     total_end_time = time.perf_counter()
     total_elapsed = total_end_time - total_start_time
@@ -181,6 +260,7 @@ if RUN_HEADLESS_BENCHMARK:
     print(f"平均每步耗时: {total_elapsed/steps*1e3:.3f} ms")
     print(f"物理计算时间: {physics_elapsed:.4f} s")
     print(f"最终仿真时间: {simulation_time:.6f} s")
+
 
     # 计算完成后，绘制一次静态图（粒子位置 + 密度分布），不保存，仅展示
     def _optimize_bandwidth_1d(x_coords_mm, max_samples_for_cv=50):
@@ -280,28 +360,67 @@ if RUN_HEADLESS_BENCHMARK:
     ax_p_h.set_ylabel("y (mm)")
     ax_p_h.scatter(positions[:, 0] * 1000, positions[:, 1] * 1000, s=(radii * 1e6 * 4)**2, c='blue', alpha=0.6)
 
-    # 右图：密度分布（相对变化百分比，与动画一致）
-    x_grid_h = np.linspace(0.0, domain_size[0] * 1000.0, 200)
-    initial_x_mm_h = initial_positions[:, 0] * 1000.0
-    current_x_mm = positions[:, 0] * 1000.0
-    # 使用优化带宽的KDE计算初始密度
-    bw_init_h = _optimize_bandwidth_1d(initial_x_mm_h)
-    initial_density_h = _kde_density_1d(initial_x_mm_h, x_grid_h, bw=bw_init_h)
-    baseline_h = np.mean(initial_density_h)
-    current_density_h = _kde_density_1d(current_x_mm, x_grid_h, bw=None)
-    relative_change_h = (current_density_h - baseline_h) / baseline_h * 100.0
-    relative_change_h = _smooth_preserve_minmax(relative_change_h)
-    ax_d_h.plot(x_grid_h, relative_change_h, 'b-', linewidth=2, label='Relative Change (%)')
-    # 动态y轴范围（10%边距）
-    y_min_h = float(np.min(relative_change_h))
-    y_max_h = float(np.max(relative_change_h))
-    y_margin_h = (y_max_h - y_min_h) * 0.1 if y_max_h > y_min_h else 1.0
-    ax_d_h.set_ylim(y_min_h - y_margin_h, y_max_h + y_margin_h)
-    ax_d_h.set_title("Particle Density Distribution (after computation)")
+    # 右图：基于距离的浓度分布变化率（柱状图）
+    # 使用与主程序相同的浓度计算机制
+    x_grid_h = np.linspace(0.0, 34.0, 100)  # 100个点用于平滑显示
+    
+    def _calculate_concentration_distribution_h(positions):
+        """基于粒子到参考位置的距离计算浓度分布 - 直接统计法，避免削峰"""
+        try:
+            # 获取当前帧的粒子位置（单位：mm）
+            current_positions = positions[:, 0] * 1000.0  # 只取x坐标
+            current_positions = current_positions[np.isfinite(current_positions)]
+            
+            if len(current_positions) == 0:
+                return np.zeros_like(x_grid_h)
+            
+            # 计算每个x_grid位置处的浓度
+            concentrations = np.zeros_like(x_grid_h)
+            
+            # 定义统计窗口大小（mm）
+            window_size = 0.2  # 0.5mm的统计窗口
+            
+            for i, x_pos in enumerate(x_grid_h):
+                # 计算在统计窗口内的粒子数量
+                # 使用简单的矩形窗口，避免高斯平滑
+                in_window = np.abs(current_positions - x_pos) <= window_size
+                concentration = np.sum(in_window)
+                
+                concentrations[i] = concentration
+            
+            return concentrations
+        except Exception as e:
+            print(f"浓度计算错误: {e}")
+            return np.zeros_like(x_grid_h)
+    
+    # 计算初始和最终浓度分布
+    initial_concentrations_h = _calculate_concentration_distribution_h(initial_positions)
+    final_concentrations_h = _calculate_concentration_distribution_h(final_positions)
+    
+    # 计算相对变化
+    with np.errstate(divide='ignore', invalid='ignore'):
+        relative_change_h = (final_concentrations_h - initial_concentrations_h) / initial_concentrations_h * 100.0
+        relative_change_h = np.nan_to_num(relative_change_h, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    bars_h = ax_d_h.bar(x_grid_h, relative_change_h, width=0.34, align='center', alpha=0.8)
+    # 平滑连接柱顶的曲线（PCHIP）
+    try:
+        pchip_h = PchipInterpolator(x_grid_h, relative_change_h, extrapolate=False)
+        x_smooth_h = np.linspace(x_grid_h[0], x_grid_h[-1], max(50, 4 * len(x_grid_h)))
+        y_smooth_h = pchip_h(x_smooth_h)
+        curve_line_h, = ax_d_h.plot(x_smooth_h, y_smooth_h, 'r-', linewidth=2, label='Smoothed')
+    except Exception:
+        curve_line_h = None
+    ax_d_h.set_xlim(x_grid_h[0], x_grid_h[-1])
+    if np.any(np.isfinite(relative_change_h)):
+        y_min_h = float(np.nanmin(relative_change_h))
+        y_max_h = float(np.nanmax(relative_change_h))
+        y_margin_h = (y_max_h - y_min_h) * 0.1 if y_max_h > y_min_h else 1.0
+        ax_d_h.set_ylim(y_min_h - y_margin_h, y_max_h + y_margin_h)
+    ax_d_h.set_title("Particle Density Change Rate (after computation)")
     ax_d_h.set_xlabel("x (mm)")
-    ax_d_h.set_ylabel("Relative Change (%)")
+    ax_d_h.set_ylabel("Concentration Change (%)")
     ax_d_h.grid(True, alpha=0.3)
-    ax_d_h.legend()
 
     plt.tight_layout()
     plt.show()
@@ -319,11 +438,11 @@ ax_particles.set_xlabel("x (mm)")
 ax_particles.set_ylabel("y (mm)")
 
 # 右侧子图：密度变化曲线
-ax_density.set_xlim(0, domain_size[0] * 1000)
+ax_density.set_xlim(0.0, 34.0)  # 更新为与x_grid一致的范围
 ax_density.set_ylim(-5, 5)  # 进一步缩小y轴范围，确保曲线可见
 ax_density.set_title("Particle Density Distribution")
 ax_density.set_xlabel("x (mm)")
-ax_density.set_ylabel("Relative Change (%)")
+ax_density.set_ylabel("Concentration Change (%)")
 ax_density.grid(True, alpha=0.3)
 
 # 移除测试粒子图例
@@ -353,62 +472,79 @@ performance_text = ax_particles.text(0.02, 0.98, '', transform=ax_particles.tran
                           verticalalignment='top', fontsize=10,
                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-# 初始化密度分布曲线（使用核密度估计获得平滑曲线）
-# 创建x坐标网格（单位：mm）
-x_grid = np.linspace(0.0, domain_size[0] * 1000.0, 200)
-# 计算初始粒子的x坐标（单位：mm）
-initial_x_positions = positions[:, 0] * 1000.0
+"""初始化基于距离的浓度分布机制（来自comsol_visualizer.py）"""
+# 创建x轴网格用于显示浓度分布
+x_grid = np.linspace(0.0, 34.0, 100)  # 100个点用于平滑显示
+concentration_values = np.zeros_like(x_grid)
 
-def _optimize_bandwidth_1d_anim(x_coords_mm, max_samples_for_cv=50):
-    x = np.asarray(x_coords_mm)
-    x = x[np.isfinite(x)]
-    if x.size < 2:
-        return None
-    idx = np.arange(x.size)
-    if x.size > max_samples_for_cv:
-        rng = np.random.default_rng(42)
-        cv_idx = rng.choice(idx, size=max_samples_for_cv, replace=False)
-    else:
-        cv_idx = idx
+# 浓度统计参数
+concentration_scale = 100.0  # 浓度缩放因子
+distance_weight = 1.0  # 距离权重
+baseline_concentration = 0.0  # 基准浓度（相对变化）
 
-    def objective(factor):
-        if factor <= 0:
-            return np.inf
-        log_like = 0.0
-        for i in cv_idx:
-            train = np.delete(x, i)
-            try:
-                kde = gaussian_kde(train, bw_method=float(factor))
-                pdf_val = float(kde(x[i])[0])
-                if pdf_val > 0:
-                    log_like += np.log(pdf_val)
-            except Exception:
-                return np.inf
-        return -log_like
+# 计算初始浓度分布
+def _calculate_concentration_distribution(positions):
+    """基于粒子到参考位置的距离计算浓度分布 - 直接统计法，避免削峰"""
+    try:
+        # 获取当前帧的粒子位置（单位：mm）
+        current_positions = positions[:, 0] * 1000.0  # 只取x坐标
+        current_positions = current_positions[np.isfinite(current_positions)]
+        
+        if len(current_positions) == 0:
+            return np.zeros_like(x_grid)
+        
+        # 计算每个x_grid位置处的浓度
+        concentrations = np.zeros_like(x_grid)
+        
+        # 定义统计窗口大小（mm）
+        window_size = 0.5  # 0.5mm的统计窗口
+        
+        for i, x_pos in enumerate(x_grid):
+            # 计算在统计窗口内的粒子数量
+            # 使用简单的矩形窗口，避免高斯平滑
+            in_window = np.abs(current_positions - x_pos) <= window_size
+            concentration = np.sum(in_window)
+            
+            concentrations[i] = concentration
+        
+        return concentrations
+    except Exception as e:
+        print(f"浓度计算错误: {e}")
+        return np.zeros_like(x_grid)
 
-    res = minimize_scalar(objective, bounds=(0.05, 1.0), method='bounded')
-    return float(res.x) if res.success else 1.0
+# 计算初始浓度分布
+initial_concentrations = _calculate_concentration_distribution(positions)
+baseline_concentration = np.mean(initial_concentrations)
 
-def _kde_density_1d_anim(x_coords_mm, eval_grid_mm, bw=None):
-    x = np.asarray(x_coords_mm)
-    if x.size == 0:
-        return np.zeros_like(eval_grid_mm)
-    if bw is None:
-        bw = _optimize_bandwidth_1d_anim(x)
-    kde = gaussian_kde(x, bw_method=float(bw))
-    return kde(eval_grid_mm)
+# 调试信息：打印浓度统计设置
+print(f"\n[调试] 基于距离的浓度统计设置:")
+print(f"  x_grid范围: {x_grid[0]:.1f}mm - {x_grid[-1]:.1f}mm")
+print(f"  浓度缩放因子: {concentration_scale}")
+print(f"  距离权重: {distance_weight}")
+print(f"  基准浓度: {baseline_concentration:.3f}")
+print(f"  总粒子数: {len(positions)}")
 
-"""使用优化带宽KDE计算初始密度与基线"""
-bw_init_anim = _optimize_bandwidth_1d_anim(initial_x_positions)
-initial_density = _kde_density_1d_anim(initial_x_positions, x_grid, bw=bw_init_anim)
-baseline = np.mean(initial_density)
-initial_relative = (initial_density - baseline) / baseline * 100.0
-def smooth_preserve_minmax(y):
-    # 使用保峰平滑，避免削弱峰值
-    return _smooth_preserve_minmax(y)
+# 计算初始相对变化
+with np.errstate(divide='ignore', invalid='ignore'):
+    relative_change0 = (initial_concentrations - initial_concentrations) / initial_concentrations * 100.0
+    relative_change0 = np.nan_to_num(relative_change0, nan=0.0, posinf=0.0, neginf=0.0)
 
-# 绘制初始密度曲线（KDE + 优化带宽 + 保峰平滑）
-density_line, = ax_density.plot(x_grid, smooth_preserve_minmax(initial_relative), 'b-', linewidth=2, label='Relative change')
+# 初始化柱状图（使用x_grid作为显示）
+bars = ax_density.bar(x_grid, relative_change0, width=0.34, align='center', alpha=0.8, label='Concentration Change')
+# 初始平滑曲线
+try:
+    pchip0 = PchipInterpolator(x_grid, relative_change0, extrapolate=False)
+    x_smooth0 = np.linspace(x_grid[0], x_grid[-1], max(50, 4 * len(x_grid)))
+    y_smooth0 = pchip0(x_smooth0)
+    curve_line, = ax_density.plot(x_smooth0, y_smooth0, 'r-', linewidth=2, label='Smoothed')
+except Exception:
+    curve_line = ax_density.plot([], [], 'r-', linewidth=2, label='Smoothed')[0]
+ax_density.set_xlim(x_grid[0], x_grid[-1])
+if np.any(np.isfinite(relative_change0)):
+    y_min0 = float(np.nanmin(relative_change0))
+    y_max0 = float(np.nanmax(relative_change0))
+    y_margin0 = (y_max0 - y_min0) * 0.1 if y_max0 > y_min0 else 1.0
+    ax_density.set_ylim(y_min0 - y_margin0, y_max0 + y_margin0)
 ax_density.legend()
 
 
@@ -453,7 +589,7 @@ def update(frame):
     
     last_frame_time = current_time
 
-    dt = 1e-6
+    dt = 1e-8
     global simulation_time
     simulation_time += dt  # 累计仿真时间
     t = simulation_time  # 使用累计时间
@@ -486,7 +622,9 @@ def update(frame):
     
     # 应用斯托克斯阻力（力）
     if USE_STOKES_DRAG:
-        drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt)
+        drag_force = apply_stokes_drag(positions, velocities, radii, mass, dt, 
+                                     time=t, use_sound_velocity=True, 
+                                     frequency=frequency, sound_pressure_level=sound_pressure_level)
         total_force += drag_force
 
     # 统一积分更新
@@ -510,21 +648,35 @@ def update(frame):
         t4 = time.perf_counter()
     
     if should_render:
-        # 更新密度分布曲线（KDE + 优化带宽 + 保峰平滑）
-        current_x_positions = positions[:, 0] * 1000.0
-        bw_cur = _optimize_bandwidth_1d_anim(current_x_positions)
-        current_density = _kde_density_1d_anim(current_x_positions, x_grid, bw=bw_cur)
-        relative_change = (current_density - baseline) / baseline * 100.0
-        relative_change = smooth_preserve_minmax(relative_change)
-        density_line.set_data(x_grid, relative_change)
-
-        # 动态调整y轴范围，确保曲线完整显示
-        y_min = np.min(relative_change)
-        y_max = np.max(relative_change)
-        y_margin = (y_max - y_min) * 0.1  # 添加10%的边距
-        ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
+        # 更新基于距离的浓度分布
+        current_concentrations = _calculate_concentration_distribution(positions)
         
-        ax_density.set_title(f"Particle Density Distribution (t = {t:.6f} s)")
+        # 计算相对变化
+        with np.errstate(divide='ignore', invalid='ignore'):
+            relative_change = (current_concentrations - initial_concentrations) / initial_concentrations * 100.0
+            relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 更新每个bar的高度
+        for rect, h in zip(bars, relative_change):
+            rect.set_height(h)
+
+        # 更新平滑曲线（PCHIP 连接柱顶）
+        try:
+            pchip = PchipInterpolator(x_grid, relative_change, extrapolate=False)
+            x_smooth = np.linspace(x_grid[0], x_grid[-1], max(50, 4 * len(x_grid)))
+            y_smooth = pchip(x_smooth)
+            curve_line.set_data(x_smooth, y_smooth)
+        except Exception:
+            curve_line.set_data(x_grid, relative_change)
+
+        # 动态调整y轴范围
+        if np.any(np.isfinite(relative_change)):
+            y_min = float(np.nanmin(relative_change))
+            y_max = float(np.nanmax(relative_change))
+            y_margin = (y_max - y_min) * 0.1 if y_max > y_min else 1.0
+            ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
+
+        ax_density.set_title(f"Particle Density Change Rate (t = {t:.6f} s)")
     
     # 计时：密度计算结束，性能显示开始
     if frame == 5 and not step_timing_printed:
@@ -537,10 +689,10 @@ def update(frame):
         if t >= 0.01 and t <= 0.2 and (t - last_save_time) >= 0.01:
             # 创建密度分布图
             plt.figure(figsize=(12, 8))
-            plt.plot(x_grid, relative_change, 'b-', linewidth=2, label='Relative Change (%)')
+            plt.bar(x_grid, relative_change, width=0.34, align='center', alpha=0.8, label='Concentration Change (%)')
             plt.xlabel('x (mm)')
-            plt.ylabel('Relative Change (%)')
-            plt.title(f'Particle Density Distribution at t = {t:.6f} s')
+            plt.ylabel('Concentration Change (%)')
+            plt.title(f'Particle Density Change Rate at t = {t:.6f} s')
             plt.grid(True, alpha=0.3)
             plt.legend()
             
@@ -608,7 +760,7 @@ def update(frame):
         print(f"  Total (incl. draw): {total_ms:.2f} ms")
         step_timing_printed = True
     
-    return sound_img, scatter, performance_text, density_line
+    return sound_img, scatter, performance_text, bars
 
 
 ani = animation.FuncAnimation(fig, update, frames=20000, interval=50, blit=False)  # 50ms间隔，约20fps
