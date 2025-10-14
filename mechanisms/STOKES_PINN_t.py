@@ -77,7 +77,7 @@ class StokesNetT(nn.Module):
 
         # 主网络（大幅简化）
         self.layers = nn.Sequential(
-            nn.Linear(2 + 1, 32),  # sin/cos特征 + t_norm
+            nn.Linear(2 + 1, 32),  # sin/cos特征 + t_norm（保持与已训权重一致）
             nn.Tanh(),
             nn.Linear(32, 16),
             nn.Tanh(),
@@ -100,27 +100,15 @@ class StokesNetT(nn.Module):
 def theoretical_stokes_force_t(t, particle_radius=1e-6):
     """
     基于 Stokes_drag.py 中的物理公式计算理论斯托克斯阻力（仅x方向，时间相关）：
-    Fx = -3πμd_p * sin(2πft) / C_c
-    其中时间相关的系数为 sin(2πft)
+    只返回时间因子 cos(2πft)，其他系数在组合时处理（与全局相位一致）
     """
     # 计算角频率
     omega = 2 * np.pi * frequency
     
-    # 计算振幅 A
-    sound_pressure = reference_pressure * (10 ** (sound_pressure_level / 20))
-    A = sound_pressure / (rho_0 * c_0 * 2 * np.pi * frequency)
+    # 只返回时间相关的系数：cos(2πft)
+    time_factor = torch.cos(omega * t)
     
-    # 计算时间相关的系数：sin(2πft)
-    time_factor = torch.sin(omega * t)
-    
-    # 计算斯托克斯阻力系数（时间相关部分）
-    drag_coeff = 3.0 * np.pi * viscosity * fixed_diameter / fixed_cunningham
-    force_factor = -drag_coeff * 2 * np.pi * frequency * A
-    
-    # 计算x方向阻力（时间相关部分）
-    force_x = force_factor * time_factor
-    
-    return force_x
+    return time_factor
 
 
 def main():

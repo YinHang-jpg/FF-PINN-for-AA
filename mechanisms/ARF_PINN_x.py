@@ -114,9 +114,10 @@ def theoretical_arf(x, particle_radius=1e-6):
     x_back = x + offset
 
     # t=0时，cos(ωt) = cos(0) = 1
+    # 与 ARF.py 保持一致：p(x,0) = 2*(2π) A p0 γ sin(kx) / λ
     A = torch.tensor(get_amplitude(), dtype=x.dtype, device=x.device)
-    p_front = 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_front) / wavelength
-    p_back = 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_back) / wavelength
+    p_front = 2.0 * 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_front) / wavelength
+    p_back  = 2.0 * 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_back ) / wavelength
 
     pressure_diff = p_front - p_back
     force_magnitude = np.pi * d_p**2 * pressure_diff / 4.0

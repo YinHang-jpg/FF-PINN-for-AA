@@ -38,10 +38,12 @@ class Normalizer:
                         torch.tensor(max(float(data[std_key]), 1e-30), device=device, dtype=torch.float32)
                     )
         else:
-            # 仅力的均值方差（单输出模型时也可使用）
-            if 'force_mu' in data and 'force_sigma' in data:
-                mu = torch.tensor(float(data['force_mu']), device=device, dtype=torch.float32)
-                sigma = torch.tensor(max(float(data['force_sigma']), 1e-30), device=device, dtype=torch.float32)
+            # 兼容时间因子/力参数键名
+            mu_key = 'force_mu' if 'force_mu' in data else ('time_factor_mu' if 'time_factor_mu' in data else None)
+            sigma_key = 'force_sigma' if 'force_sigma' in data else ('time_factor_sigma' if 'time_factor_sigma' in data else None)
+            if mu_key and sigma_key:
+                mu = torch.tensor(float(data[mu_key]), device=device, dtype=torch.float32)
+                sigma = torch.tensor(max(float(data[sigma_key]), 1e-30), device=device, dtype=torch.float32)
                 self.stats['fx'] = (mu, sigma)
 
     def transform(self, data_dict):

@@ -77,13 +77,11 @@ class ARFStokesNet(nn.Module):
         
         # 主网络
         self.layers = nn.Sequential(
-            nn.Linear(fourier_features * 4 + 3, 256),  # 位置sin/cos + 时间sin/cos + x + vx + t
+            nn.Linear(fourier_features * 4 + 3, 512),  # 位置sin/cos + 时间sin/cos + x + vx + t
             nn.Tanh(),
-            nn.Linear(256, 128),
+            nn.Linear(512, 64),
             nn.Tanh(),
-            nn.Linear(128, 16),
-            nn.Tanh(),
-            nn.Linear(16, 1)  # 输出 Fx
+            nn.Linear(64, 1)  # 输出 Fx
         )
 
     def forward(self, x, vx, t):
@@ -111,7 +109,7 @@ def theoretical_arf_stokes_force(x, vx, t, particle_radius=1e-6):
     
     其中:
     - p(x,t) = 2πAρ₀γsin(2πx/λ)cos(2πft)/λ
-    - ux = -2πfA cos(2πx/λ)sin(2πft)
+    - ux = -2πfA cos(2πx/λ)cos(2πft)
     """
     # 粒子直径
     d_p = 2 * particle_radius
@@ -139,8 +137,8 @@ def theoretical_arf_stokes_force(x, vx, t, particle_radius=1e-6):
     F_arf = np.pi * d_p**2 * pressure_diff / 4
     
     # 计算Stokes力
-    # 空气速度: ux = -2πfA cos(2πx/λ)sin(2πft)
-    ux = -2 * np.pi * frequency * A * torch.cos(k * x) * torch.sin(omega * t)
+    # 空气速度: ux = -2πfA cos(2πx/λ)cos(2πft)
+    ux = -2 * np.pi * frequency * A * torch.cos(k * x) * torch.cos(omega * t)
     
     # 相对速度
     relative_velocity = vx - ux

@@ -80,7 +80,7 @@ class StokesNetX(nn.Module):
         
         # 主网络（大幅简化）
         self.layers = nn.Sequential(
-            nn.Linear(fourier_features * 2 + 1, 32),  # sin/cos特征 + x
+            nn.Linear(fourier_features * 2 + 1, 32),  # sin/cos特征 + x（与已训练权重一致）
             nn.Tanh(),
             nn.Linear(32, 16),
             nn.Tanh(),
@@ -91,8 +91,7 @@ class StokesNetX(nn.Module):
         # 生成傅里叶特征（基于位置x）
         fourier_x = self.fourier_weights * x
         fourier_features = torch.cat([torch.sin(fourier_x), torch.cos(fourier_x)], dim=1)
-        
-        # 组合输入特征
+        # 与已训练结构对齐：拼接归一化 x 通道
         combined_input = torch.cat([fourier_features, x], dim=1)
         
         # 通过主网络
@@ -102,28 +101,16 @@ class StokesNetX(nn.Module):
 def theoretical_stokes_force_x(x, particle_radius=1e-6):
     """
     基于 Stokes_drag.py 中的物理公式计算理论斯托克斯阻力（仅x方向，位置相关）：
-    Fx = -3πμd_p * cos(2πx/λ) / C_c
-    其中位置相关的系数为 cos(2πx/λ)
+    只返回位置因子 cos(2πx/λ)，其他系数在组合时处理
     """
-    # 计算空气速度
+    # 计算波长和波数
     wavelength = sound_speed / frequency
     k = 2 * np.pi / wavelength
     
-    # 计算振幅 A
-    sound_pressure = reference_pressure * (10 ** (sound_pressure_level / 20))
-    A = sound_pressure / (rho_0 * c_0 * 2 * np.pi * frequency)
-    
-    # 计算位置相关的系数：cos(2πx/λ)
+    # 只返回位置相关的系数：cos(2πx/λ)
     position_factor = torch.cos(k * x)
     
-    # 计算斯托克斯阻力系数（位置相关部分）
-    drag_coeff = 3.0 * np.pi * viscosity * fixed_diameter / fixed_cunningham
-    force_factor = -drag_coeff * 2 * np.pi * frequency * A
-    
-    # 计算x方向阻力（位置相关部分）
-    force_x = force_factor * position_factor
-    
-    return force_x
+    return position_factor
 
 
 def main():

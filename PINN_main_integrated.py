@@ -12,11 +12,11 @@ from initialization.particle_initialization import initialize_particles
 from initialization.sound_source_standing import frequency, sound_pressure_level, compute_sound_field
 
 # 导入各个PINN模型与归一化器（参考 PINN_preview.py）
-from mechanisms.ARF_PINN_x import ARFNet as ARFNetX, Normalizer as ARFNormalizerX
-from mechanisms.ARF_PINN_t import ARFNetT, Normalizer as ARFNormalizerT
-from mechanisms.STOKES_PINN_x import StokesNetX, Normalizer as StokesNormalizerX
-from mechanisms.STOKES_PINN_t import StokesNetT, Normalizer as StokesNormalizerT
-from mechanisms.STOKES_PINN_v import StokesNetV, Normalizer as StokesNormalizerV
+from mechanisms.UNIFIED_PINN import (
+    load_individual_models,
+    UnifiedNormalizer,
+    PhysicalUnifiedModel,
+)
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
@@ -25,7 +25,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # 物理参数
 USE_STOKES_DRAG = True  # 是否使用Stokes阻力
 USE_ARF = True  # 是否使用声辐射力
-dt = 1e-6  # 时间步长 (s)
+dt = 1e-7  # 时间步长 (s)
 gravity = 9.81  # 重力加速度 (m/s²)
 particle_density = 1000  # 粒子密度 (kg/m³)
 air_density = 1.225  # 空气密度 (kg/m³)
@@ -34,65 +34,20 @@ fixed_diameter = 2e-6  # 固定粒子直径 (m)
 fixed_cunningham = 1.083  # 固定Cunningham修正因子
 
 
-def load_individual_models_and_norms():
-    models = {}
-    norms = {}
-    # 模型路径
+def load_physical_unified_model(device):
+    models = load_individual_models(device)
+    # 统一归一化器聚合各子模型的归一化范围/统计
+    unified_norm = UnifiedNormalizer()
     model_paths = {
-        'arf_x': 'PINN/arf_model_x.pth',
-        'arf_t': 'PINN/arf_model_t.pth',
-        'stokes_x': 'PINN/stokes_model_x.pth',
-        'stokes_t': 'PINN/stokes_model_t.pth',
-        'stokes_v': 'PINN/stokes_model_v.pth',
+        'arf_x_norm': 'PINN/arf_model_x_normalization_params.json',
+        'arf_t_norm': 'PINN/arf_model_t_normalization_params.json',
+        'stokes_x_norm': 'PINN/stokes_model_x_normalization_params.json',
+        'stokes_t_norm': 'PINN/stokes_model_t_normalization_params.json',
+        'stokes_v_norm': 'PINN/stokes_model_v_normalization_params.json',
     }
-    norm_paths = {
-        'arf_x': 'PINN/arf_model_x_normalization_params.json',
-        'arf_t': 'PINN/arf_model_t_normalization_params.json',
-        'stokes_x': 'PINN/stokes_model_x_normalization_params.json',
-        'stokes_t': 'PINN/stokes_model_t_normalization_params.json',
-        'stokes_v': 'PINN/stokes_model_v_normalization_params.json',
-    }
-    # 加载 ARF x
-    if os.path.exists(model_paths['arf_x']) and os.path.exists(norm_paths['arf_x']):
-        models['arf_x'] = ARFNetX(fourier_features=32)
-        models['arf_x'].load_state_dict(torch.load(model_paths['arf_x'], map_location='cpu', weights_only=True))
-        models['arf_x'].eval()
-        norms['arf_x'] = ARFNormalizerX(); norms['arf_x'].load(norm_paths['arf_x'], device='cpu')
-    else:
-        return None, None
-    # 加载 ARF t
-    if os.path.exists(model_paths['arf_t']) and os.path.exists(norm_paths['arf_t']):
-        models['arf_t'] = ARFNetT(period_seconds=1.0/frequency)
-        models['arf_t'].load_state_dict(torch.load(model_paths['arf_t'], map_location='cpu', weights_only=True))
-        models['arf_t'].eval()
-        norms['arf_t'] = ARFNormalizerT(); norms['arf_t'].load(norm_paths['arf_t'], device='cpu')
-    else:
-        return None, None
-    # 加载 Stokes x
-    if os.path.exists(model_paths['stokes_x']) and os.path.exists(norm_paths['stokes_x']):
-        models['stokes_x'] = StokesNetX(fourier_features=32)
-        models['stokes_x'].load_state_dict(torch.load(model_paths['stokes_x'], map_location='cpu', weights_only=True))
-        models['stokes_x'].eval()
-        norms['stokes_x'] = StokesNormalizerX(); norms['stokes_x'].load(norm_paths['stokes_x'], device='cpu')
-    else:
-        return None, None
-    # 加载 Stokes t
-    if os.path.exists(model_paths['stokes_t']) and os.path.exists(norm_paths['stokes_t']):
-        models['stokes_t'] = StokesNetT(period_seconds=1.0/frequency)
-        models['stokes_t'].load_state_dict(torch.load(model_paths['stokes_t'], map_location='cpu', weights_only=True))
-        models['stokes_t'].eval()
-        norms['stokes_t'] = StokesNormalizerT(); norms['stokes_t'].load(norm_paths['stokes_t'], device='cpu')
-    else:
-        return None, None
-    # 加载 Stokes v
-    if os.path.exists(model_paths['stokes_v']) and os.path.exists(norm_paths['stokes_v']):
-        models['stokes_v'] = StokesNetV()
-        models['stokes_v'].load_state_dict(torch.load(model_paths['stokes_v'], map_location='cpu', weights_only=True))
-        models['stokes_v'].eval()
-        norms['stokes_v'] = StokesNormalizerV(); norms['stokes_v'].load(norm_paths['stokes_v'], device='cpu')
-    else:
-        return None, None
-    return models, norms
+    unified_norm.load_from_individual_models(model_paths, device='cpu')
+    phys_model = PhysicalUnifiedModel(models, unified_norm, device=device)
+    return phys_model
 
 def compute_force_using_trained_models(positions_t, velocities_t, t_scalar, models, norms):
     with torch.no_grad():
@@ -143,6 +98,15 @@ def compute_force_using_trained_models(positions_t, velocities_t, t_scalar, mode
         total_force = torch.stack([total_fx_cpu, fy], dim=1).to(positions_t.device)
         return total_force
 
+def compute_force_using_physical_model(positions_t, velocities_t, t_scalar, phys_model):
+    with torch.no_grad():
+        x = positions_t[:, 0]
+        vx = velocities_t[:, 0]
+        t_vec = torch.full_like(x, float(t_scalar))
+        total_fx = phys_model(x, vx, t_vec)
+        fy = torch.zeros_like(total_fx)
+        return torch.stack([total_fx, fy], dim=1)
+
 def compute_force_components_using_trained_models(positions_t, velocities_t, t_scalar, models, norms):
     """返回分项 ARF 与 STOKES（均为CPU张量的一维: N）"""
     with torch.no_grad():
@@ -176,6 +140,14 @@ def compute_force_components_using_trained_models(positions_t, velocities_t, t_s
         arf_total = arf_fx * arf_ft
         stokes_total = -drag_coeff * (stokes_v_value - stokes_amp * stokes_ft_factor * stokes_fx_factor)
         return arf_total, stokes_total
+
+def compute_force_components_using_unified_model(positions_t, velocities_t, t_scalar, unified_model):
+    with torch.no_grad():
+        x = positions_t[:, 0].detach().cpu()
+        vx = velocities_t[:, 0].detach().cpu()
+        t_vec = torch.full_like(x, float(t_scalar))
+        total_fx, arf_fx, stokes_fx = unified_model(x.unsqueeze(1), vx.unsqueeze(1), t_vec.unsqueeze(1))
+        return arf_fx.squeeze().cpu(), stokes_fx.squeeze().cpu()
 
 def compute_particle_forces_using_models(positions_t, velocities_t, mass_t, radii_t, dt, t_scalar, models, norms):
     """使用五个已训练模型计算受力并推进一步"""
@@ -223,33 +195,29 @@ def main():
     print(f"初始化了 {positions_t.shape[0]} 个粒子")
     print(f"域大小: {domain_size[0]*1000:.1f}mm x {domain_size[1]*1000:.1f}mm")
     
-    # 加载五个已训练模型
-    print("\n正在加载已训练的分解模型(ARF/Stokes)…")
-    models, norms = load_individual_models_and_norms()
-    if models is None or norms is None:
-        print("错误: 未找到所需的分解模型或归一化参数")
-        return
+    # 加载运行时物理统一模型（内部完成反归一化）
+    print("\n正在加载物理统一模型…")
+    phys_model = load_physical_unified_model(device)
 
     # 关闭 torch.compile，避免 Triton 依赖
     # 如果未来环境满足，可重新启用
     # import torch._dynamo
     # torch._dynamo.config.suppress_errors = True
     
-    print("分解模型加载完成")
+    print("物理统一模型加载完成")
     
     # 开始计算
-    steps = 1000
+    steps = 10000
     simulation_time = 0.0
     print(f"\n开始计算: {steps} 步，时间步长: {dt:.2e} s")
     
     # 整体计算时间计时
     total_start_time = time.perf_counter()
     
-    # 计算开始时，先计算所有粒子当前的 ARF 与 STOKES 力（t=0）
-    arf_init, stokes_init = compute_force_components_using_trained_models(positions_t, velocities_t, 0.0, models, norms)
-    print("初始时刻(t=0) 力统计:")
-    print(f"  ARF  范围: [{arf_init.min():.2e}, {arf_init.max():.2e}] N | 均值: {arf_init.mean():.2e} N")
-    print(f"  STOKES 范围: [{stokes_init.min():.2e}, {stokes_init.max():.2e}] N | 均值: {stokes_init.mean():.2e} N")
+    # 计算开始时，先计算所有粒子当前的总力（t=0）用于尺度校验
+    f0 = compute_force_using_physical_model(positions_t, velocities_t, 0.0, phys_model)[:, 0]
+    print("初始时刻(t=0) 总力统计:")
+    print(f"  Fx 范围: [{f0.min().item():.2e}, {f0.max().item():.2e}] N | 均值: {f0.mean().item():.2e} N")
     # 正式时间推进
     for step in range(steps):
         # 推进时间
@@ -260,10 +228,11 @@ def main():
         positions_before = positions_t.clone()
         velocities_before = velocities_t.clone()
 
-        # 力学更新：使用分解模型（模型在CPU推理）
-        positions_t, velocities_t, forces = compute_particle_forces_using_models(
-            positions_t, velocities_t, mass_t, radii_t, dt, t, models, norms
-        )
+        # 力学更新：使用物理统一模型（已反归一化）
+        forces_t = compute_force_using_physical_model(positions_t, velocities_t, t, phys_model)
+        accelerations_t = forces_t / mass_t[:, None]
+        velocities_t = velocities_t + accelerations_t * dt
+        positions_t = positions_t + velocities_t * dt
 
         # 可选调试与进度输出已移除，避免频繁打印
     

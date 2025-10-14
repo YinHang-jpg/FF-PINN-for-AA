@@ -70,7 +70,7 @@ class StokesNetV(nn.Module):
     def __init__(self):
         super().__init__()
         
-        # 主网络（大幅简化，速度相关，无需傅里叶特征）
+        # 主网络（速度相关），保持与已训结构一致
         self.layers = nn.Sequential(
             nn.Linear(1, 16),  # 仅输入 vx
             nn.Tanh(),
@@ -87,16 +87,10 @@ class StokesNetV(nn.Module):
 def theoretical_stokes_force_v(vx, particle_radius=1e-6):
     """
     基于 Stokes_drag.py 中的物理公式计算理论斯托克斯阻力（仅x方向，速度相关）：
-    Fx = -3πμd_p * vx / C_c
-    其中速度相关的系数为 vx
+    只返回速度因子 vx，其他系数在组合时处理
     """
-    # 计算斯托克斯阻力系数（速度相关部分）
-    drag_coeff = 3.0 * np.pi * viscosity * fixed_diameter / fixed_cunningham
-    
-    # 计算x方向阻力（速度相关部分）
-    force_x = -drag_coeff * vx
-    
-    return force_x
+    # 只返回速度相关的系数：vx
+    return vx
 
 
 def main():
