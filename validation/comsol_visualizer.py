@@ -14,7 +14,6 @@ class COMSOLParticleVisualizer:
             csv_file_path: CSV文件路径
         """
         self.csv_file_path = csv_file_path
-        self.data = None
         self.times = None
         self.particle_positions = None
         self.domain_size = None
@@ -26,7 +25,6 @@ class COMSOLParticleVisualizer:
         self.ax_particles = None
         self.ax_density = None
         self.scatter = None
-        self.density_line = None
         self.time_text = None
         
         # 图片保存相关
@@ -37,8 +35,6 @@ class COMSOLParticleVisualizer:
         
         # 密度计算相关
         self.x_grid = None
-        self.baseline_density = None
-        self.bandwidth = 1.5  # 保留字段但不再使用；改为KDE+优化带宽因子
         
         self.load_data()
         self.setup_visualization()
@@ -116,16 +112,12 @@ class COMSOLParticleVisualizer:
         # 初始化基于距离的浓度统计机制
         # 三个参考位置：x=0mm, x=7.5mm, x=15mm
         self.reference_positions = np.array([0.0, 8.5, 25.5])  # mm
-        self.num_references = len(self.reference_positions)
         
-        # 浓度统计参数
-        self.concentration_scale = 100.0  # 浓度缩放因子
-        self.distance_weight = 1.0  # 距离权重
-        self.baseline_concentration = 0.0  # 基准浓度（相对变化）
+        # 基准浓度（相对变化）
+        self.baseline_concentration = 0.0
         
         # 创建x轴网格用于显示浓度分布
         self.x_grid = np.linspace(0.0, 34.0, 100)  # 100个点用于平滑显示
-        self.concentration_values = np.zeros_like(self.x_grid)
         
         # 计算初始浓度分布
         self.initial_concentrations = self._calculate_concentration_distribution(0)
@@ -134,8 +126,6 @@ class COMSOLParticleVisualizer:
         # 调试信息：打印浓度统计设置
         print(f"\n[调试] 基于距离的浓度统计设置:")
         print(f"  参考位置: {self.reference_positions} mm")
-        print(f"  浓度缩放因子: {self.concentration_scale}")
-        print(f"  距离权重: {self.distance_weight}")
         print(f"  基准浓度: {self.baseline_concentration:.3f}")
         print(f"  总粒子数: {self.num_particles}")
         

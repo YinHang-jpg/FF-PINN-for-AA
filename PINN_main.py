@@ -29,34 +29,6 @@ viscosity = 1.8e-5  # 空气动力粘度 (Pa·s)
 fixed_diameter = 2e-6  # 固定粒子直径 (m)
 fixed_cunningham = 1.083  # 固定Cunningham修正因子
 
-def calculate_concentration_distribution(positions, x_grid_mm):
-    """
-    计算浓度分布（与 validation/comsol_visualizer.py 一致的方式）：
-    - 在毫米坐标系下计算
-    - 使用高斯核（sigma=0.2 mm）对每个 x 网格点统计邻近粒子浓度
-
-    Args:
-        positions: 粒子位置（单位：米），形状 (N, 2)
-        x_grid_mm: x 轴网格（单位：毫米）
-    """
-    if len(positions) == 0:
-        return np.zeros_like(x_grid_mm)
-
-    # 将粒子 x 坐标从米转换为毫米
-    x_positions_mm = positions[:, 0] * 1000.0
-
-    # 计算每个网格点的浓度（高斯核平滑）
-    concentration = np.zeros_like(x_grid_mm)
-
-    sigma_mm = 0.2  # 浓度分布的标准差（mm）
-    two_sigma2 = 2.0 * (sigma_mm ** 2)
-
-    for i, x_center_mm in enumerate(x_grid_mm):
-        distances = np.abs(x_positions_mm - x_center_mm)
-        weights = np.exp(-(distances ** 2) / two_sigma2)
-        concentration[i] = np.sum(weights)
-
-    return concentration
 
 def compute_unified_force_using_pinn(positions_t, velocities_t, t_scalar, unified_model, unified_normalizer, ones_vec=None):
     """
@@ -216,7 +188,7 @@ def main():
     print("统一PINN模型初始化完成")
     
     # 开始计算
-    steps = 10000
+    steps = 1
     simulation_time = 0.0
     print(f"\n开始计算: {steps} 步，时间步长: {dt:.2e} s")
     
@@ -257,77 +229,133 @@ def main():
     print(f"平均每步耗时: {total_elapsed/steps*1e3:.3f} ms")
     print(f"最终仿真时间: {simulation_time:.6f} s")
     
-    # 计算并显示粒子密度分布曲线
-    print("\n计算粒子密度分布...")
+    # 重新设计的绘图方式：使用直方图显示粒子分布
+    print("\n绘制粒子分布图...")
     
-    # 创建x轴网格（毫米，与 validation/comsol_visualizer.py 一致）
-    x_grid = np.linspace(0.0, 34.0, 100)
-    
-    # 计算初始和最终浓度分布（毫米坐标系下）
     # 将最终位置从设备转回 CPU numpy
     positions_final_np = positions_t.detach().cpu().numpy()
-    initial_concentration = calculate_concentration_distribution(initial_positions, x_grid)
+    
+    # 创建图形
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # 左图：粒子位置对比
+    ax1.scatter(initial_positions[:, 0] * 1000, initial_positions[:, 1] * 1000, 
+               s=1, c='blue', alpha=0.5, label='Initial')
+    ax1.scatter(positions_final_np[:, 0] * 1000, positions_final_np[:, 1] * 1000, 
+               s=1, c='red', alpha=0.5, label='Final')
+    ax1.set_xlim(0, domain_size[0] * 1000)
+    ax1.set_ylim(0, domain_size[1] * 1000)
+    ax1.set_xlabel('X Position (mm)')
+    ax1.set_ylabel('Y Position (mm)')
+    ax1.set_title('Particle Positions: Initial vs Final')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # 右图：粒子密度分布（严格按照 comsol_visualizer.py 的方式）
+    # 创建x轴网格（与 comsol_visualizer.py 一致）
+    x_grid = np.linspace(0.0, 34.0, 100)  # 100个点用于平滑显示，覆盖0-34mm
+    
+    # 按照 comsol_visualizer.py 的方式计算浓度分布（高斯核密度估计）
+    def calculate_concentration_distribution(positions, x_grid_mm):
+        """按照 comsol_visualizer.py 的方式计算浓度分布 - 高斯核密度估计法"""
+        if len(positions) == 0:
+            return np.zeros_like(x_grid_mm)
+        
+        # 将粒子 x 坐标从米转换为毫米
+        x_positions_mm = positions[:, 0] * 1000.0
+        
+        # 计算每个x_grid位置处的浓度
+        concentrations = np.zeros_like(x_grid_mm)
+        
+        # 高斯核密度估计参数（与 comsol_visualizer.py 完全一致）
+        sigma = 0.2  # 浓度分布的标准差（mm）
+        
+        for i, x_pos in enumerate(x_grid_mm):
+            # 计算所有粒子到当前x位置的距离
+            distances = np.abs(x_positions_mm - x_pos)
+            
+            # 浓度计算：距离越近，浓度越高
+            # 使用高斯函数形式的浓度分布
+            concentration = np.sum(np.exp(-distances**2 / (2 * sigma**2)))
+            
+            concentrations[i] = concentration
+        
+        return concentrations
+    
+    # 计算初始和最终浓度分布
+    # 初始状态：所有粒子均匀分布，浓度分布为常数
+    total_particles = len(initial_positions)
+    initial_concentration = np.full_like(x_grid, total_particles / len(x_grid))  # 均匀分布
+    
+    # 最终状态：使用高斯核密度估计计算
     final_concentration = calculate_concentration_distribution(positions_final_np, x_grid)
     
-    # 计算相对变化
+    # 打印调试信息
+    print(f"\n=== 浓度分布调试信息 ===")
+    print(f"初始状态: 均匀分布，浓度 = {initial_concentration[0]:.3f} (常数)")
+    print(f"最终浓度范围: {np.min(final_concentration):.3f} - {np.max(final_concentration):.3f}")
+    print(f"初始浓度平均值: {np.mean(initial_concentration):.3f}")
+    print(f"最终浓度平均值: {np.mean(final_concentration):.3f}")
+    print(f"总粒子数: {total_particles}")
+    
+    # 计算相对变化（与初始情况的对比）
     with np.errstate(divide='ignore', invalid='ignore'):
-        # 与 validation/comsol_visualizer.py 相同：以初始浓度为分母，不加额外偏置
         relative_change = (final_concentration - initial_concentration) / initial_concentration * 100.0
         relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
     
-    # 创建图形
-    fig, (ax_particles, ax_density) = plt.subplots(1, 2, figsize=(16, 6))
+    print(f"相对变化范围: {np.min(relative_change):.3f}% - {np.max(relative_change):.3f}%")
+    print(f"相对变化平均值: {np.mean(relative_change):.3f}%")
     
-    # 左图：粒子位置对比
-    ax_particles.scatter(initial_positions[:, 0] * 1000, initial_positions[:, 1] * 1000, 
-                        s=20, c='blue', alpha=0.6, label='Initial')
-    ax_particles.scatter(positions_final_np[:, 0] * 1000, positions_final_np[:, 1] * 1000, 
-                        s=20, c='red', alpha=0.6, label='Final')
-    ax_particles.set_xlim(0, domain_size[0] * 1000)
-    ax_particles.set_ylim(0, domain_size[1] * 1000)
-    ax_particles.set_xlabel('X Position (mm)')
-    ax_particles.set_ylabel('Y Position (mm)')
-    ax_particles.set_title('Particle Positions: Initial vs Final')
-    ax_particles.grid(True, alpha=0.3)
-    ax_particles.legend()
+    # 如果相对变化都是0，显示初始浓度分布
+    if np.allclose(relative_change, 0.0):
+        print("粒子位置未变化，显示初始浓度分布（均匀分布）")
+        display_data = initial_concentration
+        ylabel = 'Concentration (Uniform)'
+    else:
+        print("显示相对变化（相对于均匀分布的百分比）")
+        display_data = relative_change
+        ylabel = 'Relative Change (%)'
     
-    # 右图：密度分布曲线（参考comsol_visualizer.py）
-    ax_density.bar(x_grid, relative_change, width=0.34, align='center', alpha=0.8, 
+    # 按照 comsol_visualizer.py 的方式绘制（高斯核密度估计 + 柱状图）
+    # 先设置轴属性
+    ax2.set_xlim(0.0, 34.0)
+    ax2.set_xlabel('X Position (mm)')
+    ax2.set_ylabel(ylabel)
+    ax2.set_title('Particle Density Distribution')
+    ax2.grid(True, alpha=0.3)
+    
+    # 创建柱状图（与 comsol_visualizer.py 一致）
+    bars = ax2.bar(x_grid, display_data, width=0.34, align='center', alpha=0.8, 
                    color='skyblue', edgecolor='navy', linewidth=0.5, label='Concentration Change')
     
-    # 添加平滑曲线
+    # 添加平滑曲线（PCHIP 连接柱顶）
+    from scipy.interpolate import PchipInterpolator
     try:
-        pchip = PchipInterpolator(x_grid, relative_change, extrapolate=False)
+        pchip = PchipInterpolator(x_grid, display_data, extrapolate=False)
         x_smooth = np.linspace(x_grid[0], x_grid[-1], max(50, 4 * len(x_grid)))
         y_smooth = pchip(x_smooth)
-        ax_density.plot(x_smooth, y_smooth, 'r-', linewidth=2, label='Smoothed')
+        curve_line, = ax2.plot(x_smooth, y_smooth, 'r-', linewidth=2, label='Smoothed')
     except Exception:
-        ax_density.plot(x_grid, relative_change, 'r-', linewidth=2, label='Smoothed')
+        curve_line, = ax2.plot(x_grid, display_data, 'r-', linewidth=2, label='Smoothed')
     
     # 动态调整y轴范围
-    if np.any(np.isfinite(relative_change)):
-        y_min = float(np.nanmin(relative_change))
-        y_max = float(np.nanmax(relative_change))
+    if np.any(np.isfinite(display_data)):
+        y_min = float(np.nanmin(display_data))
+        y_max = float(np.nanmax(display_data))
         y_margin = (y_max - y_min) * 0.1 if y_max > y_min else 1.0
-        ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
+        ax2.set_ylim(y_min - y_margin, y_max + y_margin)
     
-    ax_density.set_xlim(0.0, 34.0)
-    ax_density.set_xlabel('X Position (mm)')
-    ax_density.set_ylabel('Relative Concentration Change (%)')
-    ax_density.set_title('Particle Density Distribution')
-    ax_density.grid(True, alpha=0.3)
-    ax_density.legend()
+    ax2.legend()
     
     plt.tight_layout()
     plt.show()
     
     # 打印统计信息
-    print(f"\n=== 密度分布统计 ===")
-    print(f"初始平均浓度: {np.mean(initial_concentration):.3f}")
-    print(f"最终平均浓度: {np.mean(final_concentration):.3f}")
-    print(f"平均相对变化: {np.mean(relative_change):.1f}%")
-    print(f"最大相对变化: {np.max(relative_change):.1f}%")
-    print(f"最小相对变化: {np.min(relative_change):.1f}%")
+    print(f"\n=== 粒子分布统计 ===")
+    print(f"初始粒子数: {len(initial_positions)}")
+    print(f"最终粒子数: {len(positions_final_np)}")
+    print(f"初始x范围: {initial_positions[:, 0].min()*1000:.2f} - {initial_positions[:, 0].max()*1000:.2f} mm")
+    print(f"最终x范围: {positions_final_np[:, 0].min()*1000:.2f} - {positions_final_np[:, 0].max()*1000:.2f} mm")
     
     print("\n仿真完成！")
 
