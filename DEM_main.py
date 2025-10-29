@@ -1,4 +1,9 @@
 import matplotlib.pyplot as plt
+
+# 禁用matplotlib显示，避免在自动测试时弹出图片
+import matplotlib
+matplotlib.use('Agg')
+
 import matplotlib.animation as animation
 from initialization.particle_initialization import initialize_particles
 import numpy as np
@@ -9,6 +14,20 @@ import os
 import torch
 import json
 import sys
+
+# 修复Windows中文编码问题
+if sys.platform.startswith('win'):
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+
+
+# 修复Windows中文编码问题
+if sys.platform.startswith('win'):
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+
 from scipy.stats import gaussian_kde
 from scipy.signal import savgol_filter
 from scipy.optimize import minimize_scalar
@@ -115,7 +134,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=600000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -134,7 +153,7 @@ except Exception as e:
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
-    steps = 160000
+    steps = 10000
     dt = 1e-6
     print(f"Headless benchmark started: steps={steps}, dt={dt}")
     print("开始计算...")

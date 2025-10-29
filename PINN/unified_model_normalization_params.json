@@ -9,10 +9,10 @@
   "arf_fx_sigma": 1.1835081525912727e-11,
   "arf_ft_mu": 0.0,
   "arf_ft_sigma": 1.0,
-  "stokes_fx_mu": -0.0009658204508014023,
-  "stokes_fx_sigma": 0.7070819735527039,
-  "stokes_ft_mu": 0.0035019172355532646,
-  "stokes_ft_sigma": 0.7064769864082336,
-  "stokes_fv_mu": -0.00019387519569136202,
-  "stokes_fv_sigma": 0.05776844918727875
+  "stokes_fx_mu": -0.009966698475182056,
+  "stokes_fx_sigma": 0.7080206274986267,
+  "stokes_ft_mu": -0.007672926876693964,
+  "stokes_ft_sigma": 0.7067533135414124,
+  "stokes_fv_mu": -0.00042359111830592155,
+  "stokes_fv_sigma": 0.05738328397274017
 }

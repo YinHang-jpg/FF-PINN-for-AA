@@ -87,6 +87,7 @@ class UnifiedNormalizer:
     def normalize_inputs(self, x, vx, t):
         """
         归一化输入变量
+        对于时间变量，使用周期性归一化以支持多周期
         """
         # 位置归一化
         x_norm = (x - self.stats['x_min']) / (self.stats['x_max'] - self.stats['x_min'])
@@ -96,8 +97,9 @@ class UnifiedNormalizer:
         vx_norm = (vx - self.stats['vx_min']) / (self.stats['vx_max'] - self.stats['vx_min'])
         vx_norm = torch.clamp(vx_norm, 0.0, 1.0)
         
-        # 时间归一化
-        t_norm = (t - self.stats['t_min']) / (self.stats['t_max'] - self.stats['t_min'])
+        # 时间归一化（周期性处理）
+        period = self.stats['t_max'] - self.stats['t_min']  # 训练时的时间周期
+        t_norm = ((t - self.stats['t_min']) % period) / period
         t_norm = torch.clamp(t_norm, 0.0, 1.0)
         
         return x_norm, vx_norm, t_norm
@@ -105,6 +107,7 @@ class UnifiedNormalizer:
     def normalize_inputs_stokes(self, x, vx, t):
         """
         使用 Stokes 自己的范围进行归一化（避免与 ARF 范围混淆）
+        对于时间变量，使用周期性归一化以支持多周期
         """
         # 位置归一化（Stokes x 范围）
         x_min = self.stats.get('stokes_x_min', self.stats['x_min'])
@@ -116,10 +119,14 @@ class UnifiedNormalizer:
         vx_norm = (vx - self.stats['vx_min']) / (self.stats['vx_max'] - self.stats['vx_min'])
         vx_norm = torch.clamp(vx_norm, 0.0, 1.0)
 
-        # 时间归一化（Stokes t 范围）
+        # 时间归一化（周期性处理）
         t_min = self.stats.get('stokes_t_min', self.stats['t_min'])
         t_max = self.stats.get('stokes_t_max', self.stats['t_max'])
-        t_norm = (t - t_min) / (t_max - t_min)
+        period = t_max - t_min  # 训练时的时间周期
+        
+        # 将时间映射到 [0, 1] 范围内，支持周期性
+        t_norm = ((t - t_min) % period) / period
+        # 确保在 [0, 1] 范围内
         t_norm = torch.clamp(t_norm, 0.0, 1.0)
 
         return x_norm, vx_norm, t_norm
@@ -228,12 +235,12 @@ class PhysicalUnifiedModel(nn.Module):
         vx = vx.to(self.device).float()
         t = t.to(self.device).float()
 
-        # ARF 分量（归一化 → 模型 → 反归一化）
-        x_norm, _, t_norm = self.unified_norm.normalize_inputs(x, vx, t)
-        arf_fx_norm = self.models['arf_x'](x_norm.unsqueeze(1))
-        arf_ft_norm = self.models['arf_t'](t_norm.unsqueeze(1))
-        arf_fx, arf_ft = self.unified_norm.denormalize_arf_force(arf_fx_norm, arf_ft_norm)
-        arf_total = arf_fx.squeeze() * arf_ft.squeeze()
+        # ARF 分量（暂时移除，仅保留斯托克斯阻力）
+        # x_norm, _, t_norm = self.unified_norm.normalize_inputs(x, vx, t)
+        # arf_fx_norm = self.models['arf_x'](x_norm.unsqueeze(1))
+        # arf_ft_norm = self.models['arf_t'](t_norm.unsqueeze(1))
+        # arf_fx, arf_ft = self.unified_norm.denormalize_arf_force(arf_fx_norm, arf_ft_norm)
+        # arf_total = arf_fx.squeeze() * arf_ft.squeeze()
 
         # Stokes 分量（各自范围归一化 → 模型 → 反归一化 → 物理组合）
         sx_norm, sv_norm, st_norm = self.unified_norm.normalize_inputs_stokes(x, vx, t)
@@ -243,16 +250,35 @@ class PhysicalUnifiedModel(nn.Module):
         stokes_fx, stokes_ft, stokes_fv = self.unified_norm.denormalize_stokes_force(
             stokes_fx_norm, stokes_ft_norm, stokes_fv_norm
         )
+        
+        # 调试：检查时间变量是否正确传递
+        if hasattr(self, '_debug_count'):
+            self._debug_count += 1
+        else:
+            self._debug_count = 1
+            
+        if self._debug_count <= 5:  # 只打印前5次
+            print(f"DEBUG PhysicalUnifiedModel: t={t[0].item():.6f}s, st_norm={st_norm[0].item():.6f}")
+            print(f"  stokes_ft_norm={stokes_ft_norm[0].item():.6f}, stokes_ft={stokes_ft[0].item():.6f}")
+            print(f"  cos(ωt)理论值={torch.cos(2*np.pi*frequency*t[0]).item():.6f}")
 
-        # 物理常数与组合：-drag_coeff*(vx - stokes_amp * stokes_fx * stokes_ft)
-        drag_coeff = 3.0 * np.pi * viscosity * fixed_diameter / fixed_cunningham
-        reference_pressure = 20e-6
-        sound_pressure = reference_pressure * (10 ** (sound_pressure_level / 20))
-        A = sound_pressure / (rho_0 * c_0 * 2 * np.pi * frequency)
-        stokes_amp = 2 * np.pi * frequency * A
-        stokes_total = -drag_coeff * (vx - stokes_amp * stokes_fx.squeeze() * stokes_ft.squeeze())
+        # 物理常数与组合（修正斯托克斯阻力公式）：
+        # F = -3*pi*1.86e-5*2e-6*(v - u_air)/1.0817
+        # 其中 u_air = -2*pi*f*A*cos(2*pi*x/lambda)*cos(2*pi*f*t)
+        mu = 1.86e-5
+        cunningham = 1.0817
+        diameter = 2e-6
+        A = 2.1382e-4
+        omega = 2.0 * np.pi * frequency
+        drag_coeff = 3.0 * np.pi * mu * diameter / cunningham
+        # 气流速度：u_air = -omega*A*cos(kx)*cos(omega*t)
+        # 注意：根据Stokes_drag.py，u_air = -2*pi*f*A*cos(kx)*sin(omega*t)，但这里用cos
+        u_air = -omega * A * stokes_fx.squeeze() * stokes_ft.squeeze()
+        # 斯托克斯阻力：F = -drag_coeff * (v - u_air)
+        stokes_total = -drag_coeff * (vx - u_air)
 
-        total_fx = arf_total + stokes_total
+        # total_fx = arf_total + stokes_total
+        total_fx = stokes_total
         return total_fx  # (N,)
 
 def load_individual_models(device='cpu'):
@@ -389,11 +415,11 @@ def compute_unified_force(positions, velocities, time, models, device='cpu'):
             x_norm, vx_norm, t_norm = models['unified_norm'].normalize_inputs(x, vx, t)
             
             # 使用各个单独模型预测
-            # ARF力（模型输出反归一化）
-            arf_fx_norm = models['arf_x'](x_norm.unsqueeze(1))
-            arf_ft_norm = models['arf_t'](t_norm.unsqueeze(1))
-            arf_fx, arf_ft = models['unified_norm'].denormalize_arf_force(arf_fx_norm, arf_ft_norm)
-            arf_total = arf_fx.squeeze() * arf_ft.squeeze()
+            # ARF力（暂时移除，仅保留斯托克斯阻力）
+            # arf_fx_norm = models['arf_x'](x_norm.unsqueeze(1))
+            # arf_ft_norm = models['arf_t'](t_norm.unsqueeze(1))
+            # arf_fx, arf_ft = models['unified_norm'].denormalize_arf_force(arf_fx_norm, arf_ft_norm)
+            # arf_total = arf_fx.squeeze() * arf_ft.squeeze()
             
             # Stokes力（模型输出反归一化，按 cos 相位组合）
             stokes_x_norm, stokes_v_norm, stokes_t_norm = models['unified_norm'].normalize_inputs_stokes(x, vx, t)
@@ -402,17 +428,23 @@ def compute_unified_force(positions, velocities, time, models, device='cpu'):
             stokes_fv_norm = models['stokes_v'](stokes_v_norm.unsqueeze(1))
             stokes_fx, stokes_ft, stokes_fv = models['unified_norm'].denormalize_stokes_force(
                 stokes_fx_norm, stokes_ft_norm, stokes_fv_norm)
-            # 物理常数
-            drag_coeff = 3.0 * np.pi * viscosity * fixed_diameter / fixed_cunningham
-            reference_pressure = 20e-6
-            sound_pressure = reference_pressure * (10 ** (sound_pressure_level / 20))
-            A = sound_pressure / (rho_0 * c_0 * 2 * np.pi * frequency)
-            stokes_amp = 2 * np.pi * frequency * A
-            # 组合：-drag_coeff*(vx - stokes_amp*cos(kx)*cos(ωt))
-            stokes_total = -drag_coeff * (stokes_fv.squeeze() - stokes_amp * stokes_fx.squeeze() * stokes_ft.squeeze())
+            # 物理常数与组合（修正斯托克斯阻力公式）：
+            # F = -3*pi*1.86e-5*2e-6*(v - u_air)/1.0817
+            # 其中 u_air = -2*pi*f*A*cos(2*pi*x/lambda)*cos(2*pi*f*t)
+            mu = 1.86e-5
+            cunningham = 1.0817
+            diameter = 2e-6
+            A = 2.1382e-4
+            omega = 2.0 * np.pi * frequency
+            drag_coeff = 3.0 * np.pi * mu * diameter / cunningham
+            # 气流速度：u_air = -omega*A*cos(kx)*cos(omega*t)
+            u_air = -omega * A * stokes_fx.squeeze() * stokes_ft.squeeze()
+            # 斯托克斯阻力：F = -drag_coeff * (v - u_air)
+            stokes_total = -drag_coeff * (vx - u_air)
             
             # 总力
-            total_fx = arf_total + stokes_total
+            # total_fx = arf_total + stokes_total
+            total_fx = stokes_total
             total_fy = torch.zeros_like(total_fx)
             
             return torch.stack([total_fx, total_fy], dim=1).cpu().numpy()
@@ -519,12 +551,7 @@ def main():
         scat_p = ax_p.scatter(part_pos[:, 0] * 1000.0, np.zeros_like(part_pos[:, 0]), s=1, c='purple', alpha=0.7)
         ax_p.set_xlabel('x (mm)'); ax_p.set_ylabel('Fx (N)'); ax_p.set_title('Particle Forces'); ax_p.grid(True, alpha=0.3)
 
-        # 固定所有子图的y轴范围
-        y_min, y_max = -4e-9, 4e-9
-        ax_x.set_ylim(y_min, y_max)
-        ax_v.set_ylim(y_min, y_max)
-        ax_t.set_ylim(y_min, y_max)
-        ax_p.set_ylim(y_min, y_max)
+        # 初始由数据自动缩放，后续在每帧更新时动态调整
 
         def update(frame_idx):
             tt = float(t_frames[frame_idx])
@@ -553,10 +580,21 @@ def main():
             tp = torch.full_like(xp, tt)
             Fx_p = phys_model(xp, vp, tp).cpu().numpy()
             scat_p.set_offsets(np.c_[part_pos[:, 0] * 1000.0, Fx_p])
-            # 保障每帧y轴范围
-            ax_x.set_ylim(y_min, y_max)
-            ax_v.set_ylim(y_min, y_max)
-            ax_t.set_ylim(y_min, y_max)
+            # 动态自适应各子图y轴范围
+            ax_x.relim(); ax_x.autoscale_view()
+            ax_v.relim(); ax_v.autoscale_view()
+            ax_t.relim(); ax_t.autoscale_view()
+            # 对散点图单独计算y范围（relim对PathCollection可能不生效）
+            y_min = np.min(Fx_p)
+            y_max = np.max(Fx_p)
+            if y_min == y_max:
+                y_pad = 1e-12 if y_min == 0 else abs(y_min) * 0.05
+                y_min -= y_pad
+                y_max += y_pad
+            else:
+                pad = (y_max - y_min) * 0.05
+                y_min -= pad
+                y_max += pad
             ax_p.set_ylim(y_min, y_max)
             return line_x, line_v, line_t, scat_p
 

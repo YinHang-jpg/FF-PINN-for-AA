@@ -1,7 +1,20 @@
+
+# 修复Windows中文编码问题
+import sys
+if sys.platform.startswith('win'):
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+
 import numpy as np
 import torch
 import torch.nn as nn
+
+# 禁用matplotlib显示，避免在自动测试时弹出图片
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 import json
 import os
 import time
@@ -25,9 +38,9 @@ plt.rcParams['axes.unicode_minus'] = False
 # 物理参数
 USE_STOKES_DRAG = True  # 是否使用Stokes阻力
 USE_ARF = True  # 是否使用声辐射力
-dt = 1e-7  # 时间步长 (s)
+dt = 1e-6  # 时间步长 (s)
 gravity = 9.81  # 重力加速度 (m/s²)
-particle_density = 1000  # 粒子密度 (kg/m³)
+particle_density = 2000  # 粒子密度 (kg/m³)
 air_density = 1.225  # 空气密度 (kg/m³)
 viscosity = 1.8e-5  # 空气动力粘度 (Pa·s)
 fixed_diameter = 2e-6  # 固定粒子直径 (m)
@@ -83,15 +96,20 @@ def compute_force_using_trained_models(positions_t, velocities_t, t_scalar, mode
         # 速度项直接使用真实 vx，避免不一致的归一化文件导致量纲错误
         stokes_v_value = vx
 
-        # 物理系数（cos 相位）
-        drag_coeff = 3.0 * np.pi * 1.8e-5 * 2e-6 / 1.083
-        sound_pressure = 20e-6 * (10 ** (sound_pressure_level / 20))
-        A = sound_pressure / (1.225 * 340 * 2 * np.pi * 10000)
-        stokes_amp = 2 * np.pi * 10000 * A
-
-        # 合力（用户指定公式）
+        # 物理系数（修正斯托克斯阻力公式）
+        mu = 1.86e-5
+        cunningham = 1.0817
+        diameter = 2e-6
+        A = 2.1382e-4
+        drag_coeff = 3.0 * np.pi * mu * diameter / cunningham
+        omega = 2.0 * np.pi * frequency
+        
+        # 气流速度：u_air = -omega*A*cos(kx)*cos(omega*t)
+        u_air = -omega * A * stokes_fx_factor * stokes_ft_factor
+        
+        # 合力（修正公式）
         arf_total = arf_fx * arf_ft
-        stokes_total = -drag_coeff * (stokes_v_value - stokes_amp * stokes_ft_factor * stokes_fx_factor)
+        stokes_total = -drag_coeff * (stokes_v_value - u_air)
 
         total_fx_cpu = arf_total + stokes_total
         fy = torch.zeros_like(total_fx_cpu)
@@ -132,13 +150,19 @@ def compute_force_components_using_trained_models(positions_t, velocities_t, t_s
         stokes_ft_factor = norms['stokes_t'].inverse({'fx': stokes_ft_norm})['fx'].squeeze()
         stokes_v_value = norms['stokes_v'].inverse({'fx': stokes_fv_norm})['fx'].squeeze()
 
-        drag_coeff = 3.0 * np.pi * 1.8e-5 * 2e-6 / 1.083
-        sound_pressure = 20e-6 * (10 ** (sound_pressure_level / 20))
-        A = sound_pressure / (1.225 * 340 * 2 * np.pi * 10000)
-        stokes_amp = 2 * np.pi * 10000 * A
+        # 物理系数（与其他函数保持一致）
+        mu = 1.86e-5
+        cunningham = 1.0817
+        diameter = 2e-6
+        A = 7.64e-6
+        drag_coeff = 3.0 * np.pi * mu * diameter / cunningham
+        omega = 2.0 * np.pi * frequency
+        
+        # 气流速度：u_air = -omega*A*cos(kx)*cos(omega*t)
+        u_air = -omega * A * stokes_fx_factor * stokes_ft_factor
 
         arf_total = arf_fx * arf_ft
-        stokes_total = -drag_coeff * (stokes_v_value - stokes_amp * stokes_ft_factor * stokes_fx_factor)
+        stokes_total = -drag_coeff * (stokes_v_value - u_air)
         return arf_total, stokes_total
 
 def compute_force_components_using_unified_model(positions_t, velocities_t, t_scalar, unified_model):
@@ -153,11 +177,20 @@ def compute_particle_forces_using_models(positions_t, velocities_t, mass_t, radi
     """使用五个已训练模型计算受力并推进一步"""
     try:
         forces_t = compute_force_using_trained_models(positions_t, velocities_t, t_scalar, models, norms)
+        
+        # 添加重力（如果需要）
+        if gravity > 0:
+            gravity_force = torch.zeros_like(forces_t)
+            gravity_force[:, 1] = -mass_t * gravity  # 重力向下（y方向负）
+            forces_t = forces_t + gravity_force
+        
         # 计算加速度
         accelerations_t = forces_t / mass_t[:, None]
-        # 更新速度和位置
+        
+        # 更新速度和位置（使用前向欧拉法）
         velocities_t = velocities_t + accelerations_t * dt
         positions_t = positions_t + velocities_t * dt
+        
         return positions_t, velocities_t, (forces_t[:, 0], forces_t[:, 1])
     except Exception:
         return positions_t, velocities_t, None
@@ -207,9 +240,14 @@ def main():
     print("物理统一模型加载完成")
     
     # 开始计算
+    # 现在支持多周期仿真，使用周期性归一化
+    period = 1.0 / frequency  # 一个周期的时间
+    max_simulation_time = 10 * period  # 仿真10个周期
     steps = 10000
     simulation_time = 0.0
     print(f"\n开始计算: {steps} 步，时间步长: {dt:.2e} s")
+    print(f"频率: {frequency} Hz, 周期: {period:.6f} s")
+    print(f"最大仿真时间: {max_simulation_time:.6f} s ({max_simulation_time/period:.1f} 个周期)")
     
     # 整体计算时间计时
     total_start_time = time.perf_counter()
@@ -218,6 +256,11 @@ def main():
     f0 = compute_force_using_physical_model(positions_t, velocities_t, 0.0, phys_model)[:, 0]
     print("初始时刻(t=0) 总力统计:")
     print(f"  Fx 范围: [{f0.min().item():.2e}, {f0.max().item():.2e}] N | 均值: {f0.mean().item():.2e} N")
+    
+    # 设置打印间隔：每0.1个周期打印一次
+    print_interval = 0.1 * period  # 每0.1个周期打印一次
+    next_print_time = print_interval
+    
     # 正式时间推进
     for step in range(steps):
         # 推进时间
@@ -230,11 +273,49 @@ def main():
 
         # 力学更新：使用物理统一模型（已反归一化）
         forces_t = compute_force_using_physical_model(positions_t, velocities_t, t, phys_model)
+        
+        # 添加重力（如果需要）
+        if gravity > 0:
+            gravity_force = torch.zeros_like(forces_t)
+            gravity_force[:, 1] = -mass_t * gravity  # 重力向下（y方向负）
+            forces_t = forces_t + gravity_force
+        
+        # 计算加速度
         accelerations_t = forces_t / mass_t[:, None]
+        
+        # 更新速度和位置（使用前向欧拉法）
         velocities_t = velocities_t + accelerations_t * dt
         positions_t = positions_t + velocities_t * dt
 
-        # 可选调试与进度输出已移除，避免频繁打印
+        # 每0.001s打印一次统计信息
+        if simulation_time >= next_print_time:
+            # 计算当前时刻的力和速度统计
+            current_forces = compute_force_using_physical_model(positions_t, velocities_t, t, phys_model)
+            fx_current = current_forces[:, 0]
+            vx_current = velocities_t[:, 0]
+            vy_current = velocities_t[:, 1]
+            
+            # 计算速度大小
+            v_magnitude = torch.sqrt(vx_current**2 + vy_current**2)
+            
+            # 调试：检查时间变量是否正确传递到模型
+            
+            # current_cycle = simulation_time / period
+            # print(f"\n=== 时间: {simulation_time:.6f}s (步数: {step+1}, 周期: {current_cycle:.2f}) ===")
+            # print(f"时间变量 t = {t:.6f}s")
+            # print(f"频率 f = {frequency} Hz, 周期 T = {period:.6f}s")
+            # print(f"角频率 ω = {2*np.pi*frequency:.2f} rad/s")
+            # print(f"cos(ωt) = {np.cos(2*np.pi*frequency*t):.6f}")
+            # print(f"粒子数量: {len(positions_t)}")
+            # print(f"位置范围: x=[{positions_t[:, 0].min().item()*1000:.3f}, {positions_t[:, 0].max().item()*1000:.3f}] mm, "
+            #       f"y=[{positions_t[:, 1].min().item()*1000:.3f}, {positions_t[:, 1].max().item()*1000:.3f}] mm")
+            # print(f"速度范围: vx=[{vx_current.min().item():.2e}, {vx_current.max().item():.2e}] m/s, "
+            #       f"vy=[{vy_current.min().item():.2e}, {vy_current.max().item():.2e}] m/s")
+            # print(f"速度大小: [{v_magnitude.min().item():.2e}, {v_magnitude.max().item():.2e}] m/s, 均值: {v_magnitude.mean().item():.2e} m/s")
+            # print(f"受力范围: Fx=[{fx_current.min().item():.2e}, {fx_current.max().item():.2e}] N, 均值: {fx_current.mean().item():.2e} N")
+            
+            # 更新下次打印时间
+            next_print_time += print_interval
     
     # 计算总耗时
     total_end_time = time.perf_counter()
@@ -270,7 +351,7 @@ def main():
     ax1.grid(True, alpha=0.3)
     
     # 右图：粒子密度分布（严格按照 comsol_visualizer.py 的方式）
-    # 创建x轴网格（与 comsol_visualizer.py 一致）
+    # 创建x轴网格（与 comsol_visualizer.py 完全一致）
     x_grid = np.linspace(0.0, 34.0, 100)  # 100个点用于平滑显示，覆盖0-34mm
     
     # 按照 comsol_visualizer.py 的方式计算浓度分布（高斯核密度估计）
@@ -300,60 +381,64 @@ def main():
         
         return concentrations
     
-    # 计算初始和最终浓度分布
-    # 初始状态：所有粒子均匀分布，浓度分布为常数
-    total_particles = len(initial_positions)
-    initial_concentration = np.full_like(x_grid, total_particles / len(x_grid))  # 均匀分布
+    # 计算初始和最终浓度分布（与 comsol_visualizer.py 完全一致）
+    initial_concentrations = calculate_concentration_distribution(initial_positions, x_grid)
+    final_concentrations = calculate_concentration_distribution(positions_final_np, x_grid)
     
-    # 最终状态：使用高斯核密度估计计算
-    final_concentration = calculate_concentration_distribution(positions_final_np, x_grid)
-    
-    # 计算相对变化（与初始情况的对比）
+    # 计算相对变化（与 comsol_visualizer.py 完全一致）
     with np.errstate(divide='ignore', invalid='ignore'):
-        relative_change = (final_concentration - initial_concentration) / initial_concentration * 100.0
+        relative_change = (final_concentrations - initial_concentrations) / initial_concentrations * 100.0
         relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
     
-    # 打印调试信息
-    print(f"\n=== 浓度分布调试信息 ===")
-    print(f"初始状态: 均匀分布，浓度 = {initial_concentration[0]:.3f} (常数)")
-    print(f"最终浓度范围: {np.min(final_concentration):.3f} - {np.max(final_concentration):.3f}")
-    print(f"初始浓度平均值: {np.mean(initial_concentration):.3f}")
-    print(f"最终浓度平均值: {np.mean(final_concentration):.3f}")
-    print(f"总粒子数: {total_particles}")
-    print(f"相对变化范围: {np.min(relative_change):.3f}% - {np.max(relative_change):.3f}%")
-    print(f"相对变化平均值: {np.mean(relative_change):.3f}%")
+    # 打印调试信息（与 comsol_visualizer.py 格式一致）
+    print(f"\n[验证] 基于距离的浓度统计：t=0 vs 结束时")
+    print(f"  粒子总数: {len(initial_positions)}")
+    print("  位置(mm)                初始浓度    最终浓度    相对变化(%)")
     
-    # 始终显示相对变化（相对于均匀分布的百分比）
-    print("显示相对变化（相对于均匀分布的百分比）")
-    display_data = relative_change
-    ylabel = 'Relative Change (%)'
+    # 选择关键位置进行显示（与 comsol_visualizer.py 一致）
+    key_positions = [0.0, 8.5, 17.0, 25.5, 34.0]
+    for pos in key_positions:
+        # 找到最接近的x_grid索引
+        idx = np.argmin(np.abs(x_grid - pos))
+        c0 = initial_concentrations[idx]
+        cT = final_concentrations[idx]
+        change = relative_change[idx]
+        print(f"  {pos:6.1f}                    {c0:8.3f}    {cT:8.3f}    {change:+8.1f}")
+    
+    # 计算整体统计
+    avg_initial = np.mean(initial_concentrations)
+    avg_final = np.mean(final_concentrations)
+    avg_change = np.mean(relative_change)
+    
+    print("  ----------------------------------------------")
+    print(f"  平均浓度                 {avg_initial:8.3f}    {avg_final:8.3f}    {avg_change:+8.1f}")
     
     # 按照 comsol_visualizer.py 的方式绘制（高斯核密度估计 + 柱状图）
-    # 先设置轴属性
+    # 先设置轴属性（与 comsol_visualizer.py 完全一致）
     ax2.set_xlim(0.0, 34.0)
-    ax2.set_xlabel('X Position (mm)')
-    ax2.set_ylabel(ylabel)
+    ax2.set_ylim(-5, 5)  # 与 comsol_visualizer.py 一致的y轴范围
+    ax2.set_xlabel('x (mm)')
+    ax2.set_ylabel('Relative Change (%)')
     ax2.set_title('Particle Density Distribution')
     ax2.grid(True, alpha=0.3)
     
-    # 创建柱状图（与 comsol_visualizer.py 一致）
-    bars = ax2.bar(x_grid, display_data, width=0.34, align='center', alpha=0.8, 
+    # 创建柱状图（与 comsol_visualizer.py 完全一致）
+    bars = ax2.bar(x_grid, relative_change, width=0.34, align='center', alpha=0.8, 
                    color='skyblue', edgecolor='navy', linewidth=0.5, label='Concentration Change')
     
-    # 添加平滑曲线（PCHIP 连接柱顶）
-    from scipy.interpolate import PchipInterpolator
+    # 添加平滑曲线（PCHIP 连接柱顶，与 comsol_visualizer.py 完全一致）
     try:
-        pchip = PchipInterpolator(x_grid, display_data, extrapolate=False)
+        pchip = PchipInterpolator(x_grid, relative_change, extrapolate=False)
         x_smooth = np.linspace(x_grid[0], x_grid[-1], max(50, 4 * len(x_grid)))
         y_smooth = pchip(x_smooth)
         curve_line, = ax2.plot(x_smooth, y_smooth, 'r-', linewidth=2, label='Smoothed')
     except Exception:
-        curve_line, = ax2.plot(x_grid, display_data, 'r-', linewidth=2, label='Smoothed')
+        curve_line, = ax2.plot(x_grid, relative_change, 'r-', linewidth=2, label='Smoothed')
     
-    # 动态调整y轴范围
-    if np.any(np.isfinite(display_data)):
-        y_min = float(np.nanmin(display_data))
-        y_max = float(np.nanmax(display_data))
+    # 动态调整y轴范围（与 comsol_visualizer.py 完全一致）
+    if np.any(np.isfinite(relative_change)):
+        y_min = float(np.nanmin(relative_change))
+        y_max = float(np.nanmax(relative_change))
         y_margin = (y_max - y_min) * 0.1 if y_max > y_min else 1.0
         ax2.set_ylim(y_min - y_margin, y_max + y_margin)
     
