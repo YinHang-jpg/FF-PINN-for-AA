@@ -1,8 +1,6 @@
 import matplotlib.pyplot as plt
 
-# 禁用matplotlib显示，避免在自动测试时弹出图片
 import matplotlib
-matplotlib.use('Agg')
 
 import matplotlib.animation as animation
 from initialization.particle_initialization import initialize_particles
@@ -134,7 +132,7 @@ performance_thread.start()
 
 # 初始化粒子
 domain_size = (0.034, 0.034)
-positions, velocities, radii, mass = initialize_particles(N=600000, domain_size=domain_size)
+positions, velocities, radii, mass = initialize_particles(N=10000, domain_size=domain_size)
 # 记录初始位置用于位移计算
 initial_positions = positions.copy()
 
@@ -153,7 +151,7 @@ except Exception as e:
 
 if RUN_HEADLESS_BENCHMARK:
     # 仅运行计算，不进行任何渲染或动画，累计指定步数后退出并打印耗时
-    steps = 10000
+    steps = 40000
     dt = 1e-6
     print(f"Headless benchmark started: steps={steps}, dt={dt}")
     print("开始计算...")
@@ -443,6 +441,9 @@ if RUN_HEADLESS_BENCHMARK:
 
     plt.tight_layout()
     plt.show()
+
+    # 保证在绘制右图后插入：
+    np.savetxt('density_curve_DEM.txt', np.vstack([x_grid_h, relative_change_h]).T)
 
     sys.exit(0)
 

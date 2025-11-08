@@ -12,12 +12,12 @@ import torch.nn as nn
 
 # 禁用matplotlib显示，避免在自动测试时弹出图片
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import json
 import os
 import time
+import contextlib
 from scipy.interpolate import PchipInterpolator
 
 # 导入初始化函数
@@ -116,14 +116,20 @@ def compute_force_using_trained_models(positions_t, velocities_t, t_scalar, mode
         total_force = torch.stack([total_fx_cpu, fy], dim=1).to(positions_t.device)
         return total_force
 
-def compute_force_using_physical_model(positions_t, velocities_t, t_scalar, phys_model):
-    with torch.no_grad():
+def compute_force_using_physical_model(positions_t, velocities_t, t_scalar, phys_model, use_cuda: bool = False):
+    """仅计算并返回 Fx（一维向量）。
+    为了性能只返回 x 方向力；y 方向重力在主循环中以常量加速度直接施加。
+    """
+    with torch.inference_mode():
         x = positions_t[:, 0]
         vx = velocities_t[:, 0]
         t_vec = torch.full_like(x, float(t_scalar))
-        total_fx = phys_model(x, vx, t_vec)
-        fy = torch.zeros_like(total_fx)
-        return torch.stack([total_fx, fy], dim=1)
+        if use_cuda:
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                fx = phys_model(x, vx, t_vec)
+        else:
+            fx = phys_model(x, vx, t_vec)
+        return fx.float() if fx.dtype != torch.float32 else fx
 
 def compute_force_components_using_trained_models(positions_t, velocities_t, t_scalar, models, norms):
     """返回分项 ARF 与 STOKES（均为CPU张量的一维: N）"""
@@ -213,7 +219,7 @@ def main():
 
     # 初始化粒子
     domain_size = (0.034, 0.034)  # 34mm x 34mm
-    positions_np, velocities_np, radii_np, mass_np = initialize_particles(N=10000, domain_size=domain_size)
+    positions_np, velocities_np, radii_np, mass_np = initialize_particles(N=100000, domain_size=domain_size)
     initial_positions = positions_np.copy()
 
     # 转为 torch 张量并放到设备
@@ -231,6 +237,10 @@ def main():
     # 加载运行时物理统一模型（内部完成反归一化）
     print("\n正在加载物理统一模型…")
     phys_model = load_physical_unified_model(device)
+    try:
+        phys_model.eval()
+    except Exception:
+        pass
 
     # 关闭 torch.compile，避免 Triton 依赖
     # 如果未来环境满足，可重新启用
@@ -243,7 +253,7 @@ def main():
     # 现在支持多周期仿真，使用周期性归一化
     period = 1.0 / frequency  # 一个周期的时间
     max_simulation_time = 10 * period  # 仿真10个周期
-    steps = 10000
+    steps = 40000
     simulation_time = 0.0
     print(f"\n开始计算: {steps} 步，时间步长: {dt:.2e} s")
     print(f"频率: {frequency} Hz, 周期: {period:.6f} s")
@@ -252,8 +262,8 @@ def main():
     # 整体计算时间计时
     total_start_time = time.perf_counter()
     
-    # 计算开始时，先计算所有粒子当前的总力（t=0）用于尺度校验
-    f0 = compute_force_using_physical_model(positions_t, velocities_t, 0.0, phys_model)[:, 0]
+    # 计算开始时，先计算所有粒子当前的总力（t=0）用于尺度校验（仅Fx）
+    f0 = compute_force_using_physical_model(positions_t, velocities_t, 0.0, phys_model, use_cuda)
     print("初始时刻(t=0) 总力统计:")
     print(f"  Fx 范围: [{f0.min().item():.2e}, {f0.max().item():.2e}] N | 均值: {f0.mean().item():.2e} N")
     
@@ -261,61 +271,36 @@ def main():
     print_interval = 0.1 * period  # 每0.1个周期打印一次
     next_print_time = print_interval
     
-    # 正式时间推进
-    for step in range(steps):
-        # 推进时间
-        simulation_time += dt
-        t = simulation_time
+    # 在推演阶段关闭梯度与版本跟踪，减少开销
+    with torch.inference_mode():
+        # 预计算量（加速）
+        inv_mass_1d = 1.0 / mass_t
 
-        # 记录更新前的位置和速度
-        positions_before = positions_t.clone()
-        velocities_before = velocities_t.clone()
+        # 正式时间推进
+        for step in range(steps):
+            # 推进时间
+            simulation_time += dt
+            t = simulation_time
 
-        # 力学更新：使用物理统一模型（已反归一化）
-        forces_t = compute_force_using_physical_model(positions_t, velocities_t, t, phys_model)
-        
-        # 添加重力（如果需要）
-        if gravity > 0:
-            gravity_force = torch.zeros_like(forces_t)
-            gravity_force[:, 1] = -mass_t * gravity  # 重力向下（y方向负）
-            forces_t = forces_t + gravity_force
-        
-        # 计算加速度
-        accelerations_t = forces_t / mass_t[:, None]
-        
-        # 更新速度和位置（使用前向欧拉法）
-        velocities_t = velocities_t + accelerations_t * dt
-        positions_t = positions_t + velocities_t * dt
+            # 仅计算 Fx（模型前向按需启用AMP）
+            fx_last = compute_force_using_physical_model(positions_t, velocities_t, t, phys_model, use_cuda)
 
-        # 每0.001s打印一次统计信息
-        if simulation_time >= next_print_time:
-            # 计算当前时刻的力和速度统计
-            current_forces = compute_force_using_physical_model(positions_t, velocities_t, t, phys_model)
-            fx_current = current_forces[:, 0]
-            vx_current = velocities_t[:, 0]
-            vy_current = velocities_t[:, 1]
-            
-            # 计算速度大小
-            v_magnitude = torch.sqrt(vx_current**2 + vy_current**2)
-            
-            # 调试：检查时间变量是否正确传递到模型
-            
-            # current_cycle = simulation_time / period
-            # print(f"\n=== 时间: {simulation_time:.6f}s (步数: {step+1}, 周期: {current_cycle:.2f}) ===")
-            # print(f"时间变量 t = {t:.6f}s")
-            # print(f"频率 f = {frequency} Hz, 周期 T = {period:.6f}s")
-            # print(f"角频率 ω = {2*np.pi*frequency:.2f} rad/s")
-            # print(f"cos(ωt) = {np.cos(2*np.pi*frequency*t):.6f}")
-            # print(f"粒子数量: {len(positions_t)}")
-            # print(f"位置范围: x=[{positions_t[:, 0].min().item()*1000:.3f}, {positions_t[:, 0].max().item()*1000:.3f}] mm, "
-            #       f"y=[{positions_t[:, 1].min().item()*1000:.3f}, {positions_t[:, 1].max().item()*1000:.3f}] mm")
-            # print(f"速度范围: vx=[{vx_current.min().item():.2e}, {vx_current.max().item():.2e}] m/s, "
-            #       f"vy=[{vy_current.min().item():.2e}, {vy_current.max().item():.2e}] m/s")
-            # print(f"速度大小: [{v_magnitude.min().item():.2e}, {v_magnitude.max().item():.2e}] m/s, 均值: {v_magnitude.mean().item():.2e} m/s")
-            # print(f"受力范围: Fx=[{fx_current.min().item():.2e}, {fx_current.max().item():.2e}] N, 均值: {fx_current.mean().item():.2e} N")
-            
-            # 更新下次打印时间
-            next_print_time += print_interval
+            # 计算加速度并更新速度（逐列就地运算，避免临时张量）
+            # ax = fx/m, ay = -g（常量）
+            velocities_t[:, 0].add_(fx_last.mul(inv_mass_1d), alpha=dt)
+            if gravity > 0:
+                velocities_t[:, 1].add_(-gravity * dt)
+
+            # 更新位置（就地）
+            positions_t.add_(velocities_t, alpha=dt)
+
+            # 打印统计信息（避免二次模型前向，复用 fx_last）
+            if simulation_time >= next_print_time:
+                fx_current = fx_last
+                vx_current = velocities_t[:, 0]
+                vy_current = velocities_t[:, 1]
+                _ = torch.sqrt(vx_current * vx_current + vy_current * vy_current)
+                next_print_time += print_interval
     
     # 计算总耗时
     total_end_time = time.perf_counter()
@@ -455,6 +440,9 @@ def main():
     print(f"最终x范围: {positions_final_np[:, 0].min()*1000:.2f} - {positions_final_np[:, 0].max()*1000:.2f} mm")
     
     print("\n仿真完成！")
+
+    # 自动保存x_grid与relative_change到 'density_curve_PINN.txt'（列堆叠存储、浮点数）
+    np.savetxt('density_curve_PINN.txt', np.vstack([x_grid, relative_change]).T)
 
 if __name__ == "__main__":
     main()
