@@ -18,7 +18,6 @@ import os
 import time
 import contextlib
 from scipy.interpolate import PchipInterpolator
-from scipy.spatial import cKDTree
 from tqdm import tqdm
 
 # 导入初始化函数
@@ -32,7 +31,7 @@ from mechanisms.UNIFIED_PINN import (
     PhysicalUnifiedModel,
 )
 
-# 碰撞处理函数直接实现在本文件中，使用KDTree加速
+# 碰撞处理函数直接实现在本文件中，只考虑x方向碰撞
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
@@ -42,7 +41,7 @@ plt.rcParams['axes.unicode_minus'] = False
 USE_STOKES_DRAG = True  # 是否使用Stokes阻力
 USE_ARF = True  # 是否使用声辐射力
 dt = 1e-6  # 时间步长 (s)
-gravity = 9.81  # 重力加速度 (m/s²)
+gravity = 0.0  # 重力加速度 (m/s²)，已禁用y方向重力
 particle_density = 2000  # 粒子密度 (kg/m³)
 air_density = 1.225  # 空气密度 (kg/m³)
 viscosity = 1.8e-5  # 空气动力粘度 (Pa·s)
@@ -87,8 +86,7 @@ def compute_force_using_physical_model(positions_t, velocities_t, t_scalar, phys
 
 def handle_collisions(positions_t, velocities_t, radii_t, mass_t, particle_count_np, device):
     """
-    高效处理粒子碰撞（完全非弹性碰撞）
-    使用优化的KDTree批量查询和向量化操作大幅提升性能
+    简化碰撞处理：只考虑x方向的碰撞（完全非弹性碰撞）
     
     :param positions_t: 粒子位置张量 (N, 2)
     :param velocities_t: 粒子速度张量 (N, 2)
@@ -110,90 +108,91 @@ def handle_collisions(positions_t, velocities_t, radii_t, mass_t, particle_count
     if initial_count < 2:
         return positions_t, velocities_t, radii_t, mass_t, particle_count_np, 0
     
-    # 优化1: 使用KDTree的query_pairs进行批量查询（最快的方法）
-    max_radius = np.max(radii_np)
-    tree = cKDTree(positions_np)
+    # 只考虑x方向的碰撞：使用迭代方法，每次合并后重新检查
+    # 记录初始粒子数用于计算碰撞次数
+    collisions_count = 0
     
-    # 优化2: 使用query_pairs直接找到所有距离小于阈值的粒子对
-    # 这比逐个查询快得多（O(n log n) vs O(n²)）
-    max_search_radius = 2 * max_radius  # 最大可能的碰撞距离
-    candidate_pairs = tree.query_pairs(max_search_radius, output_type='ndarray')
+    # 迭代处理碰撞，直到没有新的碰撞发生
+    max_iterations = 100  # 防止无限循环
+    iteration = 0
     
-    # 优化3: 向量化距离计算，批量检查所有候选对
-    if len(candidate_pairs) > 0:
-        # 提取所有候选对的索引
-        i_indices = candidate_pairs[:, 0]
-        j_indices = candidate_pairs[:, 1]
+    while iteration < max_iterations:
+        iteration += 1
+        current_count = len(positions_np)
         
-        # 向量化计算：所有候选对的平方距离
-        pos_diffs = positions_np[i_indices] - positions_np[j_indices]
-        dist_sq = np.sum(pos_diffs * pos_diffs, axis=1)  # 向量化平方距离
+        if current_count < 2:
+            break
         
-        # 向量化计算：所有候选对的半径和
-        sum_radii = radii_np[i_indices] + radii_np[j_indices]
-        sum_radii_sq = sum_radii * sum_radii
+        # 按x坐标排序
+        x_positions = positions_np[:, 0]
+        sorted_indices = np.argsort(x_positions)
         
-        # 向量化过滤：只保留真正碰撞的对
-        collision_mask = dist_sq < sum_radii_sq
-        collision_pairs = candidate_pairs[collision_mask].tolist()
-        # 转换为元组列表
-        collision_pairs = [(int(i), int(j)) for i, j in collision_pairs]
-    else:
         collision_pairs = []
-    
-    # 如果没有碰撞，直接返回
-    if not collision_pairs:
-        return positions_t, velocities_t, radii_t, mass_t, particle_count_np, 0
-    
-    # 优化5: 使用更高效的方式处理碰撞对
-    # 构建并查集来处理重叠的碰撞（一个粒子可能与多个粒子碰撞）
-    to_delete = set()
-    
-    # 按质量从大到小排序，优先处理大粒子（减少后续冲突）
-    collision_pairs.sort(key=lambda p: mass_np[p[0]] + mass_np[p[1]], reverse=True)
-    
-    # 优化6: 向量化合并计算（批量处理）
-    for i, j in collision_pairs:
-        # 跳过已经被合并的粒子
-        if i in to_delete or j in to_delete:
-            continue
         
-        # 计算合并后的属性（完全非弹性碰撞）- 向量化操作
-        total_mass = mass_np[i] + mass_np[j]
-        mass_i = mass_np[i]
-        mass_j = mass_np[j]
+        # 检查相邻粒子对（只考虑x方向距离）
+        for idx in range(len(sorted_indices) - 1):
+            i = sorted_indices[idx]
+            j = sorted_indices[idx + 1]
+            
+            # 计算x方向距离
+            x_dist = abs(x_positions[i] - x_positions[j])
+            sum_radii = radii_np[i] + radii_np[j]
+            
+            # 如果x方向距离小于半径和，则发生碰撞
+            if x_dist < sum_radii:
+                collision_pairs.append((i, j))
         
-        # 质心位置（向量化）
-        center_of_mass = (positions_np[i] * mass_i + positions_np[j] * mass_j) / total_mass
+        # 如果没有碰撞，退出循环
+        if not collision_pairs:
+            break
         
-        # 动量守恒的速度（向量化）
-        merged_velocity = (velocities_np[i] * mass_i + velocities_np[j] * mass_j) / total_mass
+        # 按质量从大到小排序，优先处理大粒子（减少后续冲突）
+        collision_pairs.sort(key=lambda p: mass_np[p[0]] + mass_np[p[1]], reverse=True)
         
-        # 体积守恒的半径（假设三维球体）
-        merged_radius = np.cbrt(radii_np[i]**3 + radii_np[j]**3)
+        # 标记要删除的粒子
+        to_delete = set()
         
-        # 更新粒子计数（合并后的粒子数 = 两个粒子的计数之和）
-        merged_count = particle_count_np[i] + particle_count_np[j]
+        # 处理碰撞对
+        for i, j in collision_pairs:
+            # 跳过已经被合并的粒子
+            if i in to_delete or j in to_delete:
+                continue
+            
+            # 计算合并后的属性（完全非弹性碰撞）
+            total_mass = mass_np[i] + mass_np[j]
+            mass_i = mass_np[i]
+            mass_j = mass_np[j]
+            
+            # 只更新x坐标为质心x坐标，y坐标保持第一个粒子的y坐标不变
+            center_of_mass_x = (positions_np[i, 0] * mass_i + positions_np[j, 0] * mass_j) / total_mass
+            positions_np[i, 0] = center_of_mass_x
+            # y坐标保持不变
+            
+            # 只更新x方向速度为动量守恒的速度，y方向速度保持第一个粒子的y速度
+            merged_vx = (velocities_np[i, 0] * mass_i + velocities_np[j, 0] * mass_j) / total_mass
+            velocities_np[i, 0] = merged_vx
+            # y方向速度保持不变
+            
+            # 体积守恒的半径（假设三维球体）
+            merged_radius = np.cbrt(radii_np[i]**3 + radii_np[j]**3)
+            radii_np[i] = merged_radius
+            
+            # 更新质量和粒子计数
+            mass_np[i] = total_mass
+            particle_count_np[i] = particle_count_np[i] + particle_count_np[j]
+            
+            # 标记第二个粒子为删除
+            to_delete.add(j)
         
-        # 更新第一个粒子的属性（原地操作）
-        positions_np[i] = center_of_mass
-        velocities_np[i] = merged_velocity
-        radii_np[i] = merged_radius
-        mass_np[i] = total_mass
-        particle_count_np[i] = merged_count
-        
-        # 标记第二个粒子为删除
-        to_delete.add(j)
-    
-    # 优化7: 使用布尔索引而不是列表推导（更快）
-    if to_delete:
-        keep_mask = np.ones(initial_count, dtype=bool)
-        keep_mask[list(to_delete)] = False
-        positions_np = positions_np[keep_mask]
-        velocities_np = velocities_np[keep_mask]
-        radii_np = radii_np[keep_mask]
-        mass_np = mass_np[keep_mask]
-        particle_count_np = particle_count_np[keep_mask]
+        # 删除被标记的粒子
+        if to_delete:
+            keep_mask = np.ones(current_count, dtype=bool)
+            keep_mask[list(to_delete)] = False
+            positions_np = positions_np[keep_mask]
+            velocities_np = velocities_np[keep_mask]
+            radii_np = radii_np[keep_mask]
+            mass_np = mass_np[keep_mask]
+            particle_count_np = particle_count_np[keep_mask]
     
     # 计算碰撞数量（合并的粒子数）
     final_count = len(positions_np)
@@ -226,7 +225,7 @@ def main():
 
     # 初始化粒子
     domain_size = (0.034, 0.034)  # 34mm x 34mm
-    positions_np, velocities_np, radii_np, mass_np = initialize_particles(N=100000, domain_size=domain_size)
+    positions_np, velocities_np, radii_np, mass_np = initialize_particles(N=5000, domain_size=domain_size)
     initial_positions = positions_np.copy()
     initial_count = len(positions_np)
 
@@ -256,7 +255,7 @@ def main():
     # 现在支持多周期仿真，使用周期性归一化
     period = 1.0 / frequency  # 一个周期的时间
     max_simulation_time = 10 * period  # 仿真10个周期
-    steps = 40000
+    steps = 10000
     simulation_time = 0.0
     print(f"\n开始计算: {steps} 步，时间步长: {dt:.2e} s")
     print(f"频率: {frequency} Hz, 周期: {period:.6f} s")
@@ -279,9 +278,8 @@ def main():
     total_collisions = 0
     collision_check_count = 0
     
-    # 记录每100时步的聚集次数（用于绘图）
-    collisions_per_100_steps = []  # 存储每100步的聚集次数
-    current_100_steps_collisions = 0  # 当前100步内的聚集次数
+    # 记录每个时步的碰撞次数（用于绘图）
+    collisions_per_step = []  # 存储每个时步的碰撞次数
     
     # 在推演阶段关闭梯度与版本跟踪，减少开销
     with torch.inference_mode():
@@ -329,12 +327,9 @@ def main():
             
             total_collisions += collisions
             collision_check_count += 1
-            current_100_steps_collisions += collisions
             
-            # 每100步记录一次聚集次数
-            if (step + 1) % 100 == 0:
-                collisions_per_100_steps.append(current_100_steps_collisions)
-                current_100_steps_collisions = 0
+            # 每个时步都记录碰撞次数
+            collisions_per_step.append(collisions)
             
             # 更新进度条描述信息（减少更新频率以提升性能）
             if step % 100 == 0 or collisions > 0:
@@ -358,10 +353,6 @@ def main():
         
         # 关闭进度条
         pbar.close()
-        
-        # 记录最后不足100步的聚集次数（如果有）
-        if current_100_steps_collisions > 0:
-            collisions_per_100_steps.append(current_100_steps_collisions)
     
     # 计算总耗时
     total_end_time = time.perf_counter()
@@ -523,31 +514,50 @@ def main():
     
     ax3.legend()
     
-    # 图4：每100时步的聚集次数折线图
+    # 图4：每个时步的碰撞趋势（回归曲线，严格为正）
     ax4 = plt.subplot(2, 2, 4)
-    if len(collisions_per_100_steps) > 0:
-        # 创建x轴：每100步的区间
-        step_intervals = np.arange(1, len(collisions_per_100_steps) + 1) * 100
-        ax4.plot(step_intervals, collisions_per_100_steps, 'o-', linewidth=2, markersize=4, 
-                color='red', alpha=0.7, label='Collisions per 100 steps')
+    if len(collisions_per_step) > 0:
+        steps_arr = np.arange(1, len(collisions_per_step) + 1, dtype=float)
+        values = np.asarray(collisions_per_step, dtype=float)
+        
+        # 多项式回归（自适应阶数，最多3阶，至少1阶），在对数域拟合以确保输出严格为正
+        try:
+            deg = 3 if len(values) >= 10 else (2 if len(values) >= 5 else 1)
+            # 确保正值：选择一个数据相关的微小正数作为偏移
+            positive_values = values[values > 0]
+            if positive_values.size > 0:
+                eps = max(1e-9, float(np.percentile(positive_values, 5)) * 0.05)
+            else:
+                eps = 1e-6
+            y_fit_input = np.log(values + eps)
+            coeffs = np.polyfit(steps_arr, y_fit_input, deg=deg)
+            poly = np.poly1d(coeffs)
+            x_fit = np.linspace(float(steps_arr[0]), float(steps_arr[-1]), num=min(1000, max(100, len(values))))
+            y_fit = np.exp(poly(x_fit))  # 严格为正
+            ax4.plot(x_fit, y_fit, '-', linewidth=2.0, color='crimson', alpha=0.95, label=f'Positive regression (deg={deg})')
+        except Exception:
+            # 回退：对数域线性拟合；若仍失败则绘制一条小的正常数
+            try:
+                eps = 1e-6
+                y_fit_input = np.log(values + eps)
+                coeffs = np.polyfit(steps_arr, y_fit_input, deg=1)
+                poly = np.poly1d(coeffs)
+                x_fit = np.linspace(float(steps_arr[0]), float(steps_arr[-1]), num=min(1000, max(100, len(values))))
+                y_fit = np.exp(poly(x_fit))
+                ax4.plot(x_fit, y_fit, '-', linewidth=2.0, color='crimson', alpha=0.95, label='Positive regression (linear)')
+            except Exception:
+                x_fit = np.linspace(float(steps_arr[0]), float(steps_arr[-1]), num=min(1000, max(100, len(values))))
+                y_fit = np.full_like(x_fit, 1e-6)
+                ax4.plot(x_fit, y_fit, '-', linewidth=2.0, color='crimson', alpha=0.95, label='Positive baseline')
+        
         ax4.set_xlabel('Time Step')
-        ax4.set_ylabel('Number of Collisions')
-        ax4.set_title('Collision Frequency (per 100 steps)')
+        ax4.set_ylabel('Collisions (positive regression)')
+        ax4.set_title('Collision Trend (positive regression)')
         ax4.grid(True, alpha=0.3)
         ax4.legend()
-        
-        # 添加统计信息
-        if len(collisions_per_100_steps) > 0:
-            avg_collisions = np.mean(collisions_per_100_steps)
-            max_collisions = np.max(collisions_per_100_steps)
-            ax4.axhline(y=avg_collisions, color='green', linestyle='--', alpha=0.5, 
-                       label=f'Average: {avg_collisions:.1f}')
-            ax4.text(0.02, 0.98, f'Max: {max_collisions}\nAvg: {avg_collisions:.1f}', 
-                    transform=ax4.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     else:
         ax4.text(0.5, 0.5, 'No collision data', ha='center', va='center', transform=ax4.transAxes)
-        ax4.set_title('Collision Frequency (per 100 steps)')
+        ax4.set_title('Collision Trend (positive regression)')
     
     plt.tight_layout()
     

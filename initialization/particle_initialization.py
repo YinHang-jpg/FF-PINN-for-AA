@@ -2,7 +2,78 @@
 import numpy as np
 import math
 
-def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, init_mode='random'):
+
+def _min_distance_random_sampling(width, height, min_dist, target_count, rng):
+    """
+    生成均匀随机分布的采样点，同时保证任意两点之间的距离不少于 min_dist。
+    采用格点加邻域检测的拒绝采样方式，可覆盖整个区域。
+
+    :param width: 区域宽度 (x 方向长度)
+    :param height: 区域高度 (y 方向长度)
+    :param min_dist: 最小允许距离
+    :param target_count: 需要生成的点数
+    :param rng: NumPy 随机生成器
+    :return: (target_count, 2) 的数组，每行是一个点的 (x, y)
+    """
+    if target_count == 0:
+        return np.zeros((0, 2), dtype=float)
+
+    cell_size = min_dist
+    grid_w = max(1, int(np.ceil(width / cell_size)))
+    grid_h = max(1, int(np.ceil(height / cell_size)))
+    grid = -np.ones((grid_w, grid_h), dtype=int)
+
+    samples = []
+    min_dist_sq = min_dist * min_dist
+
+    def _grid_coords(point):
+        gx = int(point[0] / cell_size)
+        gy = int(point[1] / cell_size)
+        return min(gx, grid_w - 1), min(gy, grid_h - 1)
+
+    max_total_attempts = max(10 * target_count, 1000)
+    attempts = 0
+
+    while len(samples) < target_count and attempts < max_total_attempts:
+        candidate = rng.uniform([0.0, 0.0], [width, height])
+        attempts += 1
+
+        cgx, cgy = _grid_coords(candidate)
+        x_min = max(cgx - 1, 0)
+        x_max = min(cgx + 2, grid_w)
+        y_min = max(cgy - 1, 0)
+        y_max = min(cgy + 2, grid_h)
+
+        too_close = False
+        for gx in range(x_min, x_max):
+            for gy in range(y_min, y_max):
+                neighbor_idx = grid[gx, gy]
+                if neighbor_idx == -1:
+                    continue
+                neighbor_point = samples[neighbor_idx]
+                dx = candidate[0] - neighbor_point[0]
+                dy = candidate[1] - neighbor_point[1]
+                if dx * dx + dy * dy < min_dist_sq:
+                    too_close = True
+                    break
+            if too_close:
+                break
+
+        if too_close:
+            continue
+
+        samples.append(candidate)
+        grid[cgx, cgy] = len(samples) - 1
+
+    if len(samples) < target_count:
+        raise RuntimeError(
+            f"无法在给定的最小距离 {min_dist} 内生成 {target_count} 个不重叠粒子，请减少粒子数量或放大域尺寸。"
+        )
+
+    return np.asarray(samples, dtype=float)
+
+
+def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, init_mode='linear'):
     """
     初始化粒子群
     
@@ -28,10 +99,10 @@ def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2
         positions = np.column_stack((x_positions, np.full(N, y_position)))
         
     elif init_mode == 'random':
-        # 随机分布模式：在计算域内随机分布粒子
-        x_positions = np.random.uniform(0, Lx, N)
-        y_positions = np.random.uniform(0, Ly, N)
-        positions = np.column_stack((x_positions, y_positions))
+        # 随机分布模式：使用拒绝采样 + 网格加速，保证粒子之间至少相距5微米
+        min_center_distance = 5e-6  # 5 微米
+        rng = np.random.default_rng()
+        positions = _min_distance_random_sampling(Lx, Ly, min_center_distance, N, rng)
         
     elif init_mode == 'uniform':
         # 均匀分布模式：在计算域内均匀分布粒子
