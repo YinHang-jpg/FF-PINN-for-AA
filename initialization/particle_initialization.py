@@ -2,7 +2,7 @@
 import numpy as np
 import math
 
-def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, init_mode='linear'):
+def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, init_mode='random'):
     """
     初始化粒子群
     
