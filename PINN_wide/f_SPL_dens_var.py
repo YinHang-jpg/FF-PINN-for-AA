@@ -270,7 +270,7 @@ def theoretical_arf_t(t, freq):
 
 
 def theoretical_stokes_x(x, SPL, freq):
-    """Stokes空间分量理论值（包含响应因子）"""
+    """Stokes空间分量理论值"""
     P_rms = reference_pressure * 10 ** (SPL / 20.0)
     P_amplitude = P_rms * np.sqrt(2)
     wavelength = c_0 / freq
@@ -280,11 +280,7 @@ def theoretical_stokes_x(x, SPL, freq):
     v_air_amplitude = P_amplitude / (rho_0 * c_0)
     position_factor = torch.cos(k * x)
     
-    # 响应因子：考虑粒子对声场的响应
-    omega = 2 * np.pi * freq
-    response_factor = 1.0 / torch.sqrt(1 + (omega * t_relaxation)**2)
-    
-    return drag_coeff * v_air_amplitude * position_factor * response_factor
+    return drag_coeff * v_air_amplitude * position_factor
 
 
 def theoretical_stokes_v(vx):
@@ -295,7 +291,7 @@ def theoretical_stokes_v(vx):
 
 
 def theoretical_stokes_t(t, freq):
-    """Stokes时间分量理论值（包含响应因子）"""
+    """Stokes时间分量理论值"""
     omega = 2 * np.pi * freq
     # 时间项本身的周期性变化
     return torch.cos(omega * t)
@@ -589,7 +585,6 @@ def main():
     print(f"  公式: F_total = F_ARF + F_Stokes")
     print(f"  其中: F_ARF = f_ARF_x(x,SPL,freq) × f_ARF_t(t,freq)")
     print(f"       F_Stokes = f_Stokes_x(x,SPL,freq) × f_Stokes_v(vx) × f_Stokes_t(t,freq)")
-    print(f"  注: Stokes力包含响应因子 1/√(1+ω²t_relaxation²)")
     
     # 保存所有模型
     print("\n" + "="*60)
@@ -634,7 +629,6 @@ def main():
             't_relaxation': float(t_relaxation)
         },
         'improvements': [
-            '添加了响应因子 1/sqrt(1+omega^2*t_relaxation^2)',
             '提高了网络深度和宽度',
             '增加了训练样本数到50000',
             '降低了目标损失到1e-6',
@@ -658,7 +652,6 @@ def main():
     print("\n3D可视化图:")
     print(f"  - 3D_freq_vs_SPL.png")
     print("\n改进:")
-    print(f"  - 添加了响应因子 1/√(1+ω²t_relaxation²)")
     print(f"  - 提高了网络深度和宽度")
     print(f"  - 训练样本数: {N_train}")
     print(f"  - 目标损失: {target_loss:.1e}")

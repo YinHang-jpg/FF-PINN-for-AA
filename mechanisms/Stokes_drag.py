@@ -18,7 +18,7 @@ def cunningham_correction_factor(d_p, lambda_g):
     return C_c
 
 def compute_air_velocity_due_to_sound(positions, time, frequency=10000, 
-                                     sound_pressure_level=140, sound_speed=340):
+                                     sound_pressure_level=168.5, sound_speed=340):
     """
     计算声波影响下的空气速度场。
     

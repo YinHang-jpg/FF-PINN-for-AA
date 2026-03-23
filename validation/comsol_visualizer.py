@@ -1,404 +1,319 @@
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+# 修复Windows中文编码问题
+import sys
+if sys.platform.startswith('win'):
+    import codecs
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+
+"""
+COMSOL粒子位置数据可视化工具
+
+功能：
+    1. 读取CSV格式的粒子位置数据
+    2. 使用高斯核密度估计计算粒子数密度分布
+    3. 生成两张图：
+       - 图1: 绝对密度演化（各时刻的粒子密度分布）
+       - 图2: 相对密度变化（相对于初始时刻的密度变化百分比）
+
+CSV数据格式要求：
+    - 第一列：时间（单位：秒）
+    - 后续各列：每个粒子在x轴上的位置（单位：毫米，范围0-34mm）
+    - 行数：任意（每行对应一个时刻）
+    - 列数：任意（第一列是时间，后续列是粒子位置）
+
+示例数据结构：
+    time,particle_1,particle_2,particle_3,...
+    0.000,5.2,8.1,15.3,...
+    0.001,5.3,8.2,15.1,...
+    0.002,5.5,8.3,14.9,...
+    ...
+
+使用方法：
+    python validation/comsol_visualizer.py
+
+输出：
+    - validation/comsol_density_evolution.png  (密度演化图)
+    - validation/comsol_density_change.png     (相对变化图)
+"""
+
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import os
-from scipy.interpolate import PchipInterpolator
+from scipy.ndimage import gaussian_filter1d
 
-class COMSOLParticleVisualizer:
-    def __init__(self, csv_file_path):
-        """
-        初始化COMSOL粒子可视化器
-        
-        Args:
-            csv_file_path: CSV文件路径
-        """
-        self.csv_file_path = csv_file_path
-        self.times = None
-        self.particle_positions = None
-        self.domain_size = None
-        self.num_particles = None
-        self.num_frames = None
-        
-        # 动画相关
-        self.fig = None
-        self.ax_particles = None
-        self.ax_density = None
-        self.scatter = None
-        self.time_text = None
-        
-        # 图片保存相关
-        self.save_images = False
-        self.image_save_dir = "density_plots"
-        self.last_saved_time = -1.0
-        self.time_interval = 0.01  # 每0.01s保存一次图片
-        
-        # 密度计算相关
-        self.x_grid = None
-        
-        self.load_data()
-        self.setup_visualization()
+def calculate_particle_density(particle_positions_mm, x_grid_mm, bandwidth=0.5):
+    """
+    使用高斯核密度估计计算粒子数密度
     
-    def load_data(self):
-        """加载CSV数据并进行NaN清洗"""
-        try:
-            # 读取CSV文件（允许空白行），先按字符串读入再统一转换为数值，无法转换的置为NaN
-            raw = pd.read_csv(self.csv_file_path, header=None, skip_blank_lines=True)
-            raw = raw.dropna(axis=1, how='all')  # 丢弃全为空的列（常见于尾部多余逗号）
-            raw = raw.apply(pd.to_numeric, errors='coerce')  # 全部转为数值，非法值->NaN
-
-            # 丢弃时间列为NaN的行
-            raw = raw.dropna(axis=0, subset=[0])
-
-            # 提取时间和粒子位置
-            self.times = raw.iloc[:, 0].to_numpy()
-            positions_df = raw.iloc[:, 1:]
-
-            # 丢弃全为NaN的粒子列（某些列可能完全为空）
-            positions_df = positions_df.dropna(axis=1, how='all')
-
-            self.particle_positions = positions_df.to_numpy()  # 形状: [帧数, 粒子数]，允许含NaN
-
-            # 获取数据维度
-            self.num_frames = len(self.times)
-            self.num_particles = self.particle_positions.shape[1]
-
-            # 使用NaN安全的min/max进行范围打印
-            try:
-                pos_min = float(np.nanmin(self.particle_positions))
-                pos_max = float(np.nanmax(self.particle_positions))
-                print(f"数据加载成功:")
-                print(f"  时间帧数: {self.num_frames}")
-                print(f"  粒子数量: {self.num_particles}")
-                print(f"  时间范围: {self.times[0]:.6f}s - {self.times[-1]:.6f}s")
-                print(f"  位置范围: {pos_min*1000:.3f}mm - {pos_max*1000:.3f}mm")
-            except ValueError:
-                # 全部为NaN的极端情况
-                pos_min, pos_max = -0.017, 0.017
-                print(f"数据加载成功，但位置数据均为NaN，使用默认范围±17mm")
-
-            # 计算域大小（基于粒子位置范围）
-            x_min = pos_min
-            x_max = pos_max
-            if not np.isfinite(x_min) or not np.isfinite(x_max):
-                x_min, x_max = -0.017, 0.017  # 回退到±17mm（米）
-            y_range = 0.01  # 假设y方向范围（米）
-            self.domain_size = (float(x_max - x_min + 0.002), y_range)  # 添加一些边距
-
-        except Exception as e:
-            print(f"数据加载失败: {e}")
-            raise
+    参数:
+        particle_positions_mm: 一维数组，包含所有粒子的x坐标（单位：mm）
+        x_grid_mm: 一维数组，用于计算密度的x轴网格点（单位：mm）
+        bandwidth: 高斯核的带宽（单位：mm），控制平滑程度
     
-    def setup_visualization(self):
-        """设置可视化界面 - 使用DEM_main.py的绘图机制"""
-        # 创建图形和子图
-        self.fig, (self.ax_particles, self.ax_density) = plt.subplots(1, 2, figsize=(16, 6))
-        
-        # 左侧子图：粒子运动
-        self.ax_particles.set_xlim(0.0, 34.0)
-        self.ax_particles.set_ylim(0, self.domain_size[1] * 1000)
-        self.ax_particles.set_title("Particle Motion (COMSOL Data)")
-        self.ax_particles.set_xlabel("x (mm)")
-        self.ax_particles.set_ylabel("y (mm)")
-        
-        # 右侧子图：密度变化曲线
-        self.ax_density.set_xlim(0.0, 34.0)
-        self.ax_density.set_ylim(-5, 5)  # 进一步缩小y轴范围，确保曲线可见
-        self.ax_density.set_title("Particle Density Distribution")
-        self.ax_density.set_xlabel("x (mm)")
-        self.ax_density.set_ylabel("Relative Change (%)")
-        self.ax_density.grid(True, alpha=0.3)
-        
-        # 初始化基于距离的浓度统计机制
-        # 三个参考位置：x=0mm, x=7.5mm, x=15mm
-        self.reference_positions = np.array([0.0, 8.5, 25.5])  # mm
-        
-        # 基准浓度（相对变化）
-        self.baseline_concentration = 0.0
-        
-        # 创建x轴网格用于显示浓度分布
-        self.x_grid = np.linspace(0.0, 34.0, 100)  # 100个点用于平滑显示
-        
-        # 计算初始浓度分布
-        self.initial_concentrations = self._calculate_concentration_distribution(0)
-        self.baseline_concentration = np.mean(self.initial_concentrations)
-        
-        # 调试信息：打印浓度统计设置
-        print(f"\n[调试] 基于距离的浓度统计设置:")
-        print(f"  参考位置: {self.reference_positions} mm")
-        print(f"  基准浓度: {self.baseline_concentration:.3f}")
-        print(f"  总粒子数: {self.num_particles}")
-        
-        # 初始化散点图
-        self.scatter = self.ax_particles.scatter([], [], s=50, c='blue', alpha=0.6, label='Particles')
-        
-        # 初始化基于距离的浓度柱状图
-        # 初始化柱状图（使用x_grid作为显示）
-        self.bars = self.ax_density.bar(self.x_grid, [0]*len(self.x_grid), width=0.34, align='center', alpha=0.8, label='Concentration Change')
-        self.curve_line, = self.ax_density.plot([], [], 'r-', linewidth=2, label='Smoothed')
-        
-        # 添加图例
-        self.ax_particles.legend()
-        self.ax_density.legend()
-        
-        # 添加时间显示
-        self.time_text = self.ax_particles.text(0.02, 0.98, '', transform=self.ax_particles.transAxes, 
-                                               verticalalignment='top', fontsize=10,
-                                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-        # 打印区间内粒子数量在 t=0 与结束时的对比
-        self.print_initial_final_bin_counts()
-        
-        # 设置图片保存功能
-        self.setup_image_saving()
+    返回:
+        density: 在x_grid_mm各点的粒子数密度
     
-    def _calculate_concentration_distribution(self, frame):
-        """基于粒子到参考位置的距离计算浓度分布"""
-        try:
-            # 获取当前帧的粒子位置（单位：mm）
-            current_positions = self.particle_positions[frame, :] * 1000.0
-            current_positions = current_positions[np.isfinite(current_positions)]
-            
-            if len(current_positions) == 0:
-                return np.zeros_like(self.x_grid)
-            
-            # 计算每个x_grid位置处的浓度
-            concentrations = np.zeros_like(self.x_grid)
-            
-            for i, x_pos in enumerate(self.x_grid):
-                # 计算所有粒子到当前x位置的距离
-                distances = np.abs(current_positions - x_pos)
-                
-                # 浓度计算：距离越近，浓度越高
-                # 使用高斯函数形式的浓度分布
-                sigma = 0.2  # 浓度分布的标准差（mm）
-                concentration = np.sum(np.exp(-distances**2 / (2 * sigma**2)))
-                
-                concentrations[i] = concentration
-            
-            return concentrations
-        except Exception as e:
-            print(f"浓度计算错误 (frame {frame}): {e}")
-            return np.zeros_like(self.x_grid)
+    说明:
+        - 使用高斯核：exp(-distance²/(2*bandwidth²))
+        - 自动过滤NaN和超出范围的值
+        - 适用于任意数量的粒子
+    """
+    if len(particle_positions_mm) == 0:
+        return np.zeros_like(x_grid_mm)
     
-    def print_initial_final_bin_counts(self):
-        """打印基于距离的浓度统计信息"""
-        try:
-            # 计算初始和最终浓度分布
-            initial_concentrations = self._calculate_concentration_distribution(0)
-            final_concentrations = self._calculate_concentration_distribution(self.num_frames - 1)
-            
-            # 计算相对变化
-            with np.errstate(divide='ignore', invalid='ignore'):
-                relative_change = (final_concentrations - initial_concentrations) / initial_concentrations * 100.0
-                relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            # 打印表头
-            print("\n[验证] 基于距离的浓度统计：t=0 vs 结束时")
-            print(f"  参考位置: {self.reference_positions} mm")
-            print(f"  粒子总数: {self.num_particles}")
-            print("  位置(mm)                初始浓度    最终浓度    相对变化(%)")
-
-            # 选择关键位置进行显示
-            key_positions = [0.0, 8.5, 17.0, 25.5, 34.0]
-            for pos in key_positions:
-                # 找到最接近的x_grid索引
-                idx = np.argmin(np.abs(self.x_grid - pos))
-                c0 = initial_concentrations[idx]
-                cT = final_concentrations[idx]
-                change = relative_change[idx]
-                print(f"  {pos:6.1f}                    {c0:8.3f}    {cT:8.3f}    {change:+8.1f}")
-
-            # 计算整体统计
-            avg_initial = np.mean(initial_concentrations)
-            avg_final = np.mean(final_concentrations)
-            avg_change = np.mean(relative_change)
-            
-            print("  ----------------------------------------------")
-            print(f"  平均浓度                 {avg_initial:8.3f}    {avg_final:8.3f}    {avg_change:+8.1f}")
-            
-            # 打印峰值位置的变化
-            print(f"\n[峰值分析] 参考位置附近的浓度变化:")
-            for i, ref_pos in enumerate(self.reference_positions):
-                idx = np.argmin(np.abs(self.x_grid - ref_pos))
-                c0 = initial_concentrations[idx]
-                cT = final_concentrations[idx]
-                change = relative_change[idx]
-                print(f"  参考位置{i+1} ({ref_pos:5.1f}mm): 初始={c0:6.3f} 最终={cT:6.3f} 变化={change:+6.1f}%")
-            print()
-        except Exception as e:
-            print(f"[验证打印失败]: {e}")
-
-    def setup_image_saving(self):
-        """设置图片保存功能"""
-        import os
-        import shutil
-        
-        # 创建保存目录
-        if os.path.exists(self.image_save_dir):
-            # 如果目录存在，清空所有文件
-            shutil.rmtree(self.image_save_dir)
-            print(f"清空现有图片目录: {self.image_save_dir}")
-        
-        os.makedirs(self.image_save_dir, exist_ok=True)
-        print(f"创建图片保存目录: {self.image_save_dir}")
-        
-        # 启用图片保存
-        self.save_images = True
-        self.last_saved_time = -1.0
-        
-    def save_density_image(self, frame, current_time):
-        """保存当前密度曲线图片 - 直接保存动画帧"""
-        import os
-        
-        if not self.save_images:
-            return
-            
-        # 检查是否到了保存时间间隔（基于精确的0.01s倍数）
-        target_time = round(current_time / self.time_interval) * self.time_interval
-        
-        # 只有当当前时间接近目标时间且距离上次保存足够远时才保存
-        if (abs(current_time - target_time) > 0.001 or 
-            current_time - self.last_saved_time < self.time_interval - 0.001):
-            return
-            
-        try:
-            # 确保目录存在
-            os.makedirs(self.image_save_dir, exist_ok=True)
-            
-            # 直接保存当前动画帧
-            filename = f"density_plot_{frame:03d}_t_{current_time:.6f}s.png"
-            filepath = os.path.join(self.image_save_dir, filename)
-            
-            # 保存整个图形（包含粒子运动和密度两个子图）
-            self.fig.savefig(filepath, dpi=150, bbox_inches='tight')
-            
-            # 更新最后保存时间
-            self.last_saved_time = current_time
-            
-            print(f"保存密度图片: {filename}")
-            print(f"  保存路径: {os.path.abspath(filepath)}")
-            
-        except Exception as e:
-            print(f"保存图片失败 (frame {frame}): {e}")
-
+    # 移除无效值（NaN或超出范围的值）
+    particle_positions_mm = particle_positions_mm[~np.isnan(particle_positions_mm)]
+    particle_positions_mm = particle_positions_mm[(particle_positions_mm >= 0) & (particle_positions_mm <= 34)]
     
-    def update_frame(self, frame):
-        """更新动画帧 - 使用DEM_main.py的绘图机制"""
-        if frame >= self.num_frames:
-            return self.scatter, self.curve_line, self.time_text
-        
-        # 获取当前帧的粒子位置（忽略NaN）
-        current_positions = (self.particle_positions[frame, :] * 1000)
-        current_positions = current_positions[np.isfinite(current_positions)]
-        
-        # 更新散点图
-        # 为每个粒子分配y坐标（均匀分布）
-        y_positions = np.linspace(0, self.domain_size[1] * 1000, len(current_positions))
-        scatter_data = np.column_stack([current_positions, y_positions])
-        self.scatter.set_offsets(scatter_data)
-        
-        # 更新基于距离的浓度分布
-        current_concentrations = self._calculate_concentration_distribution(frame)
-        
-        # 计算相对变化
-        with np.errstate(divide='ignore', invalid='ignore'):
-            relative_change = (current_concentrations - self.initial_concentrations) / self.initial_concentrations * 100.0
-            relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        # 更新每个bar的高度
-        for rect, h in zip(self.bars, relative_change):
-            rect.set_height(h)
-
-        # 更新平滑曲线（PCHIP 连接柱顶）
-        try:
-            pchip = PchipInterpolator(self.x_grid, relative_change, extrapolate=False)
-            x_smooth = np.linspace(self.x_grid[0], self.x_grid[-1], max(50, 4 * len(self.x_grid)))
-            y_smooth = pchip(x_smooth)
-            self.curve_line.set_data(x_smooth, y_smooth)
-        except Exception:
-            self.curve_line.set_data(self.x_grid, relative_change)
-
-        # 动态调整y轴范围
-        if np.any(np.isfinite(relative_change)):
-            y_min = float(np.nanmin(relative_change))
-            y_max = float(np.nanmax(relative_change))
-            y_margin = (y_max - y_min) * 0.1 if y_max > y_min else 1.0
-            self.ax_density.set_ylim(y_min - y_margin, y_max + y_margin)
-
-        # 更新标题和时间显示
-        current_time = self.times[frame]
-        self.ax_density.set_title(f"Particle Density Change Rate (t = {current_time:.6f} s)")
-        self.time_text.set_text(f'Time: {current_time:.6f} s\nFrame: {frame+1}/{self.num_frames}\nParticles: {len(current_positions)}')
-
-        # 保存密度图片（每0.01s保存一次）
-        self.save_density_image(frame, current_time)
-
-        return self.scatter, self.curve_line, self.time_text
+    if len(particle_positions_mm) == 0:
+        return np.zeros_like(x_grid_mm)
     
-    def create_animation(self, interval=50, save_path=None):
-        """
-        创建动画
-        
-        Args:
-            interval: 动画间隔（毫秒）
-            save_path: 保存路径（可选）
-        """
-        print(f"创建动画...")
-        print(f"  总帧数: {self.num_frames}")
-        print(f"  动画间隔: {interval}ms")
-        print(f"  预计时长: {self.num_frames * interval / 1000:.1f}秒")
-        
-        # 创建动画
-        ani = animation.FuncAnimation(
-            self.fig, 
-            self.update_frame, 
-            frames=self.num_frames,
-            interval=interval,
-            blit=False,
-            repeat=False
-        )
-        
-        # 保存动画（如果指定了路径）
-        if save_path:
-            print(f"保存动画到: {save_path}")
-            ani.save(save_path, writer='pillow', fps=1000//interval)
-            print("动画保存完成")
-        
-        return ani
+    density = np.zeros_like(x_grid_mm)
     
-    def show_animation(self, interval=50):
-        """显示动画"""
-        ani = self.create_animation(interval=interval)
-        plt.tight_layout()
-        plt.show()
-        return ani
+    # 高斯核密度估计
+    for idx, x_pos in enumerate(x_grid_mm):
+        # 计算所有粒子到当前位置的距离
+        distances = np.abs(particle_positions_mm - x_pos)
+        
+        # 使用高斯核计算密度贡献
+        density_contribution = np.exp(-distances**2 / (2 * bandwidth**2))
+        density[idx] = np.sum(density_contribution)
+    
+    return density
+
 
 def main():
-    """主函数"""
-    # CSV文件路径
-    csv_file = "validation/comsol_positions.csv"
+    """
+    主函数：读取COMSOL数据并绘制粒子数密度随时间的变化
     
-    # 检查文件是否存在
-    if not os.path.exists(csv_file):
-        print(f"错误: 文件 {csv_file} 不存在")
+    功能：
+    - 自动检测CSV文件中的时间点数量（第一列）
+    - 自动处理任意数量的粒子（后续列）
+    - 生成两张图：绝对密度演化图 + 相对密度变化图
+    """
+    
+    print("="*80)
+    print("COMSOL粒子位置数据可视化 (支持任意时间点数量)")
+    print("="*80)
+    
+    # 读取CSV文件
+    csv_path = 'validation/comsol_positions.csv'
+    
+    if not os.path.exists(csv_path):
+        print(f"错误：找不到文件 {csv_path}")
         return
     
-    try:
-        # 创建可视化器
-        print("创建COMSOL粒子可视化器...")
-        visualizer = COMSOLParticleVisualizer(csv_file)
+    print(f"\n正在读取文件: {csv_path}")
+    # 使用header=None，将所有行作为数据读取（不把第一行当作列名）
+    df = pd.read_csv(csv_path, header=None)
+    
+    # 自动检测时间点数量和粒子数量
+    num_timesteps = len(df)
+    num_particles = len(df.columns) - 1
+    
+    print(f"数据维度: {df.shape}")
+    print(f"✓ 检测到 {num_timesteps} 个时间点")
+    print(f"✓ 检测到 {num_particles} 个粒子")
+    
+    # 验证数据有效性
+    if num_timesteps == 0:
+        print("错误：CSV文件中没有数据行")
+        return
+    if num_particles == 0:
+        print("错误：CSV文件中没有粒子位置列（除时间列外）")
+        return
+    
+    # 第一列是时间
+    time_values = df.iloc[:, 0].values
+    
+    # 检查时间列中是否有NaN值
+    nan_count = np.sum(np.isnan(time_values))
+    if nan_count > 0:
+        print(f"\n⚠️  警告：时间列中检测到 {nan_count} 个NaN值！")
+        print(f"   有效时间点数量: {num_timesteps - nan_count}")
+        print(f"   无效时间点位置: {np.where(np.isnan(time_values))[0].tolist()}")
         
-        # 显示动画
-        print("\n开始播放动画...")
-        print("密度曲线图片将每0.01s自动保存到 'density_plots' 目录")
-        print("按Ctrl+C停止动画")
-        ani = visualizer.show_animation(interval=100)  # 100ms间隔
+        # 过滤掉NaN时间点
+        valid_indices = ~np.isnan(time_values)
+        time_values_valid = time_values[valid_indices]
+        particle_positions_valid = df.iloc[:, 1:].values[valid_indices, :]
         
-    except KeyboardInterrupt:
-        print("\n动画已停止")
-    except Exception as e:
-        print(f"发生错误: {e}")
+        print(f"\n   已自动过滤掉无效时间点，继续处理 {len(time_values_valid)} 个有效时间点")
+        
+        # 更新数据
+        time_values = time_values_valid
+        particle_positions = particle_positions_valid
+        num_timesteps = len(time_values)
+        
+        if num_timesteps == 0:
+            print("\n错误：过滤后没有有效的时间点！")
+            return
+    else:
+        # 没有NaN值，正常读取粒子位置
+        particle_positions = df.iloc[:, 1:].values  # shape: (n_timesteps, n_particles)
+    
+    print(f"\n时间范围: {time_values[0]:.6f}s 到 {time_values[-1]:.6f}s")
+    
+    # 根据时间点数量决定是否打印所有时间点
+    if num_timesteps <= 20:
+        print(f"时间点: {time_values}")
+    else:
+        print(f"时间点（前5个）: {time_values[:5]}")
+        print(f"时间点（后5个）: {time_values[-5:]}")
+    
+    # 定义x轴网格（用于计算密度分布）
+    x_grid_mm = np.linspace(0, 34, 200)  # 从0到34mm，200个点
+    
+    # 设置绘图参数
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    # 创建图形
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # 根据时间点数量动态生成颜色映射（从蓝色到红色）
+    colors = plt.cm.coolwarm(np.linspace(0, 1, num_timesteps))
+    
+    print(f"\n{'='*80}")
+    print(f"开始计算各时刻的粒子密度分布（共{num_timesteps}个时刻）...")
+    print(f"{'='*80}\n")
+    
+    # 存储所有密度曲线用于后续分析
+    all_densities = []
+    
+    # 对每个时间点计算并绘制密度分布
+    for i, t in enumerate(time_values):
+        # 获取当前时刻所有粒子的位置
+        positions_at_t = particle_positions[i, :]
+        
+        # 计算粒子数密度
+        density = calculate_particle_density(positions_at_t, x_grid_mm, bandwidth=0.5)
+        all_densities.append(density)
+        
+        # 对密度曲线进行平滑处理（可选）
+        density_smoothed = gaussian_filter1d(density, sigma=2)
+        
+        # 绘制密度曲线
+        label = f't = {t:.4f}s ({t*1000:.2f}ms)'
+        ax.plot(x_grid_mm, density_smoothed, 
+                color=colors[i], 
+                linewidth=2.0, 
+                alpha=0.8,
+                label=label)
+        
+        print(f"时刻 {i+1}/{len(time_values)}: t={t:.6f}s, "
+              f"有效粒子数={np.sum(~np.isnan(positions_at_t))}, "
+              f"最大密度={np.max(density):.2f}")
+    
+    # 设置图表属性
+    ax.set_xlim(0, 34)
+    ax.set_xlabel('位置 x (mm)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('粒子数密度 (任意单位)', fontsize=14, fontweight='bold')
+    ax.set_title(f'COMSOL数据：粒子数密度随时间的演化 (共{num_timesteps}个时刻)', 
+                 fontsize=16, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # 根据时间点数量决定图例布局
+    if num_timesteps <= 12:
+        ncol = 2
+    elif num_timesteps <= 24:
+        ncol = 3
+    else:
+        ncol = 4
+    
+    ax.legend(loc='best', fontsize=9, framealpha=0.9, ncol=ncol)
+    
+    # 自动调整y轴范围
+    all_densities_array = np.array(all_densities)
+    y_min = np.min(all_densities_array)
+    y_max = np.max(all_densities_array)
+    y_range = y_max - y_min
+    y_margin = max(y_range * 0.1, 1.0)
+    ax.set_ylim(y_min - y_margin, y_max + y_margin)
+    
+    plt.tight_layout()
+    
+    # 保存图像
+    output_dir = 'validation'
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, 'comsol_density_evolution.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    
+    print(f"\n{'='*80}")
+    print(f"图1（密度演化）已保存到: {output_path}")
+    print(f"{'='*80}\n")
+    
+    # 显示图像（可选）
+    # plt.show()
+    plt.close()
+    
+    # ==================== 生成第二张图：相对密度变化 ====================
+    fig2, ax2 = plt.subplots(figsize=(14, 8))
+    
+    # 计算相对于初始时刻的密度变化
+    initial_density = all_densities[0]
+    
+    print(f"{'='*80}")
+    print(f"开始计算相对密度变化（相对于初始时刻t={time_values[0]:.6f}s）...")
+    print(f"{'='*80}\n")
+    
+    # 对所有时间点计算并绘制相对变化（包括初始时刻，变化为0%）
+    for i, t in enumerate(time_values):
+        density = all_densities[i]
+        
+        # 计算相对变化（百分比）
+        with np.errstate(divide='ignore', invalid='ignore'):
+            relative_change = (density - initial_density) / (initial_density + 1e-10) * 100.0
+            relative_change = np.nan_to_num(relative_change, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 绘制相对变化曲线
+        label = f't = {t:.4f}s ({t*1000:.2f}ms)'
+        ax2.plot(x_grid_mm, relative_change,
+                color=colors[i],
+                linewidth=2.0,
+                alpha=0.8,
+                label=label)
+        
+        print(f"时刻 {i+1}/{num_timesteps}: t={t:.6f}s, "
+              f"相对变化范围=[{np.min(relative_change):.2f}%, {np.max(relative_change):.2f}%]")
+    
+    # 设置图表属性
+    ax2.set_xlim(0, 34)
+    ax2.set_xlabel('位置 x (mm)', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('相对密度变化 (%)', fontsize=14, fontweight='bold')
+    ax2.set_title(f'COMSOL数据：相对于初始时刻的粒子密度变化 (共{num_timesteps}条曲线)', 
+                  fontsize=16, fontweight='bold')
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    
+    # 根据曲线数量决定图例布局
+    if num_timesteps <= 12:
+        ncol2 = 2
+    elif num_timesteps <= 24:
+        ncol2 = 3
+    else:
+        ncol2 = 4
+    
+    ax2.legend(loc='best', fontsize=9, framealpha=0.9, ncol=ncol2)
+    ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
+    
+    plt.tight_layout()
+    
+    # 保存第二张图
+    output_path2 = os.path.join(output_dir, 'comsol_density_change.png')
+    plt.savefig(output_path2, dpi=300, bbox_inches='tight')
+    
+    print(f"\n图2（相对密度变化）已保存到: {output_path2}")
+    print(f"\n{'='*80}")
+    print("✓ 可视化完成！")
+    print(f"  - 共处理 {num_timesteps} 个时间点")
+    print(f"  - 共处理 {num_particles} 个粒子")
+    print(f"  - 图1: 绝对密度演化 ({num_timesteps}条曲线)")
+    print(f"  - 图2: 相对密度变化 ({num_timesteps}条曲线)")
+    print(f"{'='*80}\n")
+    
+    plt.close()
+
 
 if __name__ == "__main__":
     main()

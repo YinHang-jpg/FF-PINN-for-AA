@@ -53,15 +53,30 @@ COLLISION_CHECK_INTERVAL = 1  # 每个时步都检查碰撞
 
 
 def load_physical_unified_model(device):
-    models = load_individual_models(device)
+    """加载物理统一模型
+    
+    通过环境变量 PINN_FREQ_FOLDER 可以指定使用哪个频率的模型
+    例如: PINN_FREQ_FOLDER='freq_8k' 会从 PINN/freq_8k/ 加载模型
+    """
+    # 检查是否指定了特定的频率文件夹（通过环境变量）
+    freq_folder = os.environ.get('PINN_FREQ_FOLDER', None)
+    
+    if freq_folder:
+        model_base_path = os.path.join('PINN', freq_folder)
+        print(f"  使用频率特定模型: {model_base_path}")
+    else:
+        model_base_path = 'PINN'
+        print(f"  使用默认模型: {model_base_path}")
+    
+    models = load_individual_models(device, model_base_path)
     # 统一归一化器聚合各子模型的归一化范围/统计
     unified_norm = UnifiedNormalizer()
     model_paths = {
-        'arf_x_norm': 'PINN/arf_model_x_normalization_params.json',
-        'arf_t_norm': 'PINN/arf_model_t_normalization_params.json',
-        'stokes_x_norm': 'PINN/stokes_model_x_normalization_params.json',
-        'stokes_t_norm': 'PINN/stokes_model_t_normalization_params.json',
-        'stokes_v_norm': 'PINN/stokes_model_v_normalization_params.json',
+        'arf_x_norm': os.path.join(model_base_path, 'arf_model_x_normalization_params.json'),
+        'arf_t_norm': os.path.join(model_base_path, 'arf_model_t_normalization_params.json'),
+        'stokes_x_norm': os.path.join(model_base_path, 'stokes_model_x_normalization_params.json'),
+        'stokes_t_norm': os.path.join(model_base_path, 'stokes_model_t_normalization_params.json'),
+        'stokes_v_norm': os.path.join(model_base_path, 'stokes_model_v_normalization_params.json'),
     }
     unified_norm.load_from_individual_models(model_paths, device='cpu')
     phys_model = PhysicalUnifiedModel(models, unified_norm, device=device)
@@ -231,7 +246,7 @@ def main():
     # 使用 linear 模式：水平均匀分布，x坐标均匀分布，y坐标固定在域中心
     # 注意：频率会通过 sound_source_standing.py 中的 frequency 变量动态变化
     positions_np, velocities_np, radii_np, mass_np = initialize_particles(
-        N=12000, domain_size=domain_size, diameter=fixed_diameter, 
+        N=14000, domain_size=domain_size, diameter=fixed_diameter, 
         density=particle_density, init_mode='linear'
     )
     initial_positions = positions_np.copy()
@@ -260,14 +275,28 @@ def main():
     print("物理统一模型加载完成")
     
     # 开始计算
+    # 从环境变量或模型路径推断频率
+    freq_folder = os.environ.get('PINN_FREQ_FOLDER', None)
+    if freq_folder:
+        import re
+        freq_match = re.search(r'freq_(\d+)k', freq_folder)
+        if freq_match:
+            actual_frequency = int(freq_match.group(1)) * 1000  # 转换为Hz
+            print(f"从环境变量推断频率: {actual_frequency} Hz")
+        else:
+            actual_frequency = frequency  # 使用默认频率
+            print(f"无法从环境变量推断频率，使用默认值: {actual_frequency} Hz")
+    else:
+        actual_frequency = frequency  # 使用默认频率
+        print(f"未设置PINN_FREQ_FOLDER，使用默认频率: {actual_frequency} Hz")
+    
     # 现在支持多周期仿真，使用周期性归一化
-    # 注意：frequency 来自 initialization/sound_source_standing.py，会在 freq_sweep.py 中动态更新
-    period = 1.0 / frequency  # 一个周期的时间
+    period = 1.0 / actual_frequency  # 一个周期的时间
     max_simulation_time = 10 * period  # 仿真10个周期
     steps = 10000
     simulation_time = 0.0
     print(f"\n开始计算: {steps} 步，时间步长: {dt:.2e} s")
-    print(f"频率: {frequency} Hz, 周期: {period:.6f} s")
+    print(f"频率: {actual_frequency} Hz, 周期: {period:.6f} s")
     print(f"最大仿真时间: {max_simulation_time:.6f} s ({max_simulation_time/period:.1f} 个周期)")
     print(f"碰撞检查间隔: 每 {COLLISION_CHECK_INTERVAL} 步检查一次")
     

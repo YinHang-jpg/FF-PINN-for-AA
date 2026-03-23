@@ -1,5 +1,5 @@
 import numpy as np
-from initialization.sound_source_standing import sound_pressure_level, spl_to_pressure, compute_sound_field
+from initialization.sound_source_standing import sound_pressure_level, spl_to_pressure, compute_sound_field, frequency
 
 def bilinear_interpolate(grid, x, y, dx, dy):
     Nx = grid.shape[1]
@@ -23,8 +23,7 @@ p_0 = 101325    # Pa
 # 物理参数（空气）
 rho_0 = 1.225  # 空气密度 (kg/m³)
 gamma = 1.4    # 空气绝热指数
-c_0 = 340      # 声速 (m/s)
-frequency = 12000  # Hz
+c_0 = 340      # 声速 (m/s)，frequency 已从 sound_source_standing 导入
 
 # 动态计算声压幅值：2倍声压（从声压级转换）
 def get_amplitude():

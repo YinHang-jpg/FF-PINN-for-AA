@@ -10,9 +10,12 @@ try:
 except Exception:
     from mechanisms.Stokes_drag import compute_air_velocity_due_to_sound
 
-# 物理参数
-frequency = 12000  # Hz
-sound_pressure_level = 140  # dB
+# 频率等物理参数：从统一配置读取，保证 freq_sweep_with_training 修改频率后本脚本使用正确值
+try:
+    from initialization.sound_source_standing import frequency
+except Exception:
+    frequency = 10000  # Hz，仅当未从项目根运行时的回退
+sound_pressure_level = 168.5  # dB
 sound_speed = 340  # m/s
 viscosity = 1.8e-5  # Pa·s
 fixed_diameter = 2e-6  # m
@@ -99,6 +102,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("基于 Stokes 解析公式的 PINN 训练（速度相关）…")
     print(f"device: {device}")
+    print(f"当前频率: {frequency} Hz")
 
     # 数据生成（仅速度vx）
     N = 20000

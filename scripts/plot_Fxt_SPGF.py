@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 try:
-    from mechanisms.ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
+    from mechanisms.ARF import p_0, rho_0, gamma, c_0, frequency, get_amplitude
 except Exception:
-    from ARF import p_0, rho_0, gamma, c_0, frequency, amplitude
+    from ARF import p_0, rho_0, gamma, c_0, frequency, get_amplitude
 
 
 class SimpleMLP(nn.Module):
@@ -98,8 +98,9 @@ def load_x_model_and_norms():
         k = 2 * np.pi / wavelength
         d_p = 2.0 * 1e-6
         offset = np.sqrt(2.0) * d_p / 4.0
-        p_front = 2.0 * np.pi * amplitude * p_0 * gamma * np.sin(k * (xs - offset)) / wavelength
-        p_back  = 2.0 * np.pi * amplitude * p_0 * gamma * np.sin(k * (xs + offset)) / wavelength
+        amp = get_amplitude()
+        p_front = 2.0 * np.pi * amp * p_0 * gamma * np.sin(k * (xs - offset)) / wavelength
+        p_back  = 2.0 * np.pi * amp * p_0 * gamma * np.sin(k * (xs + offset)) / wavelength
         force   = np.pi * d_p**2 * (p_front - p_back) / 4.0
         norms = {
             'x_min': float(x_min_m),
@@ -198,6 +199,12 @@ def main():
     ax2.set_title('PINN-predicted F(x,t) contour')
 
     plt.tight_layout()
+    
+    # Save figure
+    output_path = 'scripts/arf_force_visualization.png'
+    plt.savefig(output_path, dpi=200, bbox_inches='tight')
+    print(f"\nFigure saved to: {output_path}")
+    
     plt.show()
 
 

@@ -237,6 +237,13 @@ class PhysicalUnifiedModel(nn.Module):
         self.models = models
         self.unified_norm = unified_norm
         self.device = torch.device(device)
+        
+        # 从归一化参数中推断频率
+        t_max = unified_norm.stats.get('t_max', 1.0/10000)
+        self.inferred_frequency = 1.0 / t_max if t_max > 0 else 10000
+        print(f"  [PhysicalUnifiedModel] 从归一化参数推断频率: {self.inferred_frequency:.1f} Hz (t_max={t_max:.6f}s)")
+        print(f"  [PhysicalUnifiedModel] 对应波长: {340.0/self.inferred_frequency*1000:.2f} mm")
+        print(f"  [PhysicalUnifiedModel] 驻波节点间距: {340.0/self.inferred_frequency*1000/2:.2f} mm")
  
     @torch.no_grad()
     def forward(self, x, vx, t):
@@ -267,7 +274,7 @@ class PhysicalUnifiedModel(nn.Module):
         mu = 1.86e-5
         cunningham = 1.0817
         diameter = 2e-6
-        omega = 2.0 * np.pi * frequency
+        omega = 2.0 * np.pi * self.inferred_frequency
         drag_coeff = 3.0 * np.pi * mu * diameter / cunningham
        
         # 动态计算振幅 A（根据频率和声压级）
@@ -277,27 +284,11 @@ class PhysicalUnifiedModel(nn.Module):
         c_0 = 340      # 声速 (m/s)
         A = sound_pressure / (rho_0 * c_0 * omega)
        
-        # 计算粒子质量（球形粒子，密度2000 kg/m³）
-        particle_density = 2000.0
-        radius = diameter / 2.0
-        particle_mass = (4.0/3.0) * np.pi * (radius**3) * particle_density
-       
-        # 计算粒子响应时间：tau_p = mass / drag_coeff
-        tau_p = particle_mass / drag_coeff
-       
-        # 计算频率响应衰减因子（考虑粒子惯性）
-        # 高频时粒子无法跟随快速振荡的气流
-        response_factor = 1.0 / (1.0 + (omega * tau_p)**2)
-       
         # 气流速度：u_air = -omega*A*cos(kx)*cos(omega*t)
         u_air = -omega * A * stokes_fx.squeeze() * stokes_ft.squeeze()
        
-        # 应用频率响应衰减到振荡气流速度
-        u_air_eff = u_air * response_factor
-       
-        # 斯托克斯阻力：F = -drag_coeff * (v - u_air_eff)
-        # 使用衰减后的有效气流速度
-        stokes_total = -drag_coeff * (vx - u_air_eff)
+        # 斯托克斯阻力：F = -drag_coeff * (v - u_air)
+        stokes_total = -drag_coeff * (vx - u_air)
  
         # 总力 = ARF + Stokes
         total_fx = arf_total + stokes_total
@@ -312,6 +303,16 @@ def load_individual_models(device='cpu', model_base_path='PINN'):
         model_base_path: 模型文件所在的基础路径（例如 'PINN/freq_8k'）
     """
     models = {}
+    
+    # 从路径推断频率（用于创建模型实例）
+    import re
+    freq_match = re.search(r'freq_(\d+)k', model_base_path)
+    if freq_match:
+        inferred_frequency = int(freq_match.group(1)) * 1000  # 转换为Hz
+        print(f"  从路径推断频率: {inferred_frequency} Hz")
+    else:
+        inferred_frequency = frequency # Default fallback
+        print(f"  使用默认频率: {inferred_frequency} Hz")
    
     # 加载ARF模型
     try:
@@ -328,8 +329,8 @@ def load_individual_models(device='cpu', model_base_path='PINN'):
         else:
             print(f"  ✗ 未找到 ARF x模型: {arf_x_path}")
        
-        # ARF t模型
-        period = 1.0 / frequency
+        # ARF t模型 - 使用推断的频率
+        period = 1.0 / inferred_frequency
         arf_t_model = ARFNetT(period_seconds=period).to(device)
         arf_t_path = os.path.join(model_base_path, 'arf_model_t.pth')
         if os.path.exists(arf_t_path):
@@ -377,8 +378,8 @@ def load_individual_models(device='cpu', model_base_path='PINN'):
         else:
             print(f"  ✗ 未找到 Stokes x模型: {stokes_x_path}")
        
-        # Stokes t模型
-        period = 1.0 / frequency
+        # Stokes t模型 - 使用推断的频率
+        period = 1.0 / inferred_frequency
         stokes_t_model = StokesNetT(period_seconds=period).to(device)
         stokes_t_path = os.path.join(model_base_path, 'stokes_model_t.pth')
         if os.path.exists(stokes_t_path):
@@ -500,27 +501,11 @@ def compute_unified_force(positions, velocities, time, models, device='cpu'):
             c_0 = 340      # 声速 (m/s)
             A = sound_pressure / (rho_0 * c_0 * omega)
            
-            # 计算粒子质量（球形粒子，密度2000 kg/m³）
-            particle_density = 2000.0
-            radius = diameter / 2.0
-            particle_mass = (4.0/3.0) * np.pi * (radius**3) * particle_density
-           
-            # 计算粒子响应时间：tau_p = mass / drag_coeff
-            tau_p = particle_mass / drag_coeff
-           
-            # 计算频率响应衰减因子（考虑粒子惯性）
-            # 高频时粒子无法跟随快速振荡的气流
-            response_factor = 1.0 / (1.0 + (omega * tau_p)**2)
-           
             # 气流速度：u_air = -omega*A*cos(kx)*cos(omega*t)
             u_air = -omega * A * stokes_fx.squeeze() * stokes_ft.squeeze()
            
-            # 应用频率响应衰减到振荡气流速度
-            u_air_eff = u_air * response_factor
-           
-            # 斯托克斯阻力：F = -drag_coeff * (v - u_air_eff)
-            # 使用衰减后的有效气流速度
-            stokes_total = -drag_coeff * (vx - u_air_eff)
+            # 斯托克斯阻力：F = -drag_coeff * (v - u_air)
+            stokes_total = -drag_coeff * (vx - u_air)
            
             # 总力 = ARF + Stokes
             total_fx = arf_total + stokes_total
