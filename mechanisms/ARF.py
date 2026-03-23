@@ -24,7 +24,7 @@ p_0 = 101325    # Pa
 rho_0 = 1.225  # 空气密度 (kg/m³)
 gamma = 1.4    # 空气绝热指数
 c_0 = 340      # 声速 (m/s)
-frequency = 10000  # Hz
+frequency = 12000  # Hz
 
 # 动态计算声压幅值：2倍声压（从声压级转换）
 def get_amplitude():

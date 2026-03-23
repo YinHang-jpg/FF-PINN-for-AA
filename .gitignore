@@ -1,38 +1,109 @@
-# 排除不需要的文件和目录
+# ===================================
+# 只跟踪Python脚本，忽略所有数据和结果文件
+# ===================================
 
-# 大型PDF文件
-*.pdf
+# ============ 图片文件 ============
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.svg
+*.tiff
+*.ico
 
-# 缓存目录
+# ============ 数据文件 ============
+*.csv
+*.txt
+*.dat
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+
+# ============ 模型文件 ============
+*.pth
+*.pt
+*.ckpt
+*.weights
+*.h5
+
+# ============ 配置和参数文件 ============
+*.json
+
+# ============ 日志文件 ============
+*.log
+debug.log
+
+# ============ 结果目录 ============
+results/
+DEM_plots/
+density_plots/
+
+# ============ PINN模型目录 ============
+PINN/freq_*/
+PINN/density/
+PINN/*.pth
+PINN/*.json
+PINN_wide/*.pth
+PINN_wide/*.json
+PINN_wide/*.png
+
+# ============ 数据和缓存 ============
+data/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# 数据目录
-data/
-density_plots/
-
-# 虚拟环境
-DEM/
-
-# 应用目录
-app/
-
-# 检查点文件
 .ipynb_checkpoints/
 
-# 测试文件（保留核心的）
-test_*.py
-simple_*.py
-basic_*.py
-quick_*.py
-check_*.py
+# ============ 文档文件 ============
+*.pdf
+*.doc
+*.docx
 
-# 其他不需要的文件
+# ============ Jupyter Notebook ============
 *.ipynb
-README_collision.md
 
-# 系统文件
+# ============ 特定分析结果 ============
+clustering_results.png
+auto_test_results*.csv
+test_results.csv
+*_curve.txt
+academic_paragraph_*.md
+
+# ============ 临时文件 ============
+*.tmp
+*.temp
+*.bak
+*.kernelbak
+*.swp
+*~
+
+# ============ 系统文件 ============
 .DS_Store
 Thumbs.db
+desktop.ini
+*.lnk
+
+# ============ 虚拟环境 ============
+venv/
+env/
+ENV/
+DEM/
+app/
+
+# ============ IDE 和编辑器 ============
+.vscode/
+.idea/
+*.sublime-*
+
+# ===================================
+# 保留的文件（白名单）
+# ===================================
+# 确保这些重要文件被跟踪
+!requirements.txt
+!README.md
+!.gitignore

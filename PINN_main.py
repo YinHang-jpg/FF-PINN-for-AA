@@ -145,10 +145,10 @@ def compute_force_using_trained_models(positions_t, velocities_t, t_scalar, mode
 
 def compute_force_components_using_trained_models(positions_t, velocities_t, t_scalar, models, norms):
     """返回分项 ARF 与 STOKES（均为CPU张量的一维: N）"""
-        with torch.no_grad():
+    with torch.no_grad():
         x = positions_t[:, 0].detach().cpu()
         vx = velocities_t[:, 0].detach().cpu()
-                t_vec = torch.full_like(x, float(t_scalar))
+        t_vec = torch.full_like(x, float(t_scalar))
 
         x_norm_arf = norms['arf_x'].transform({'x': x.unsqueeze(1)})['x'].squeeze()
         t_norm_arf = norms['arf_t'].transform({'t': t_vec.unsqueeze(1)})['t'].squeeze()

@@ -1,0 +1,16 @@
+comsol is missing. 
+dont plot two diagure experiment, input plot the two diagrams into one together. 
+Need another plot for the stokes drag also. 
+Comparison of model of PINN vs DEM is missing. Equations are too simple. 
+Expand the equation for others to simplify their replication. 
+A flow chart of the entire process. 
+不需要从1到20，只需要1，5，10，15，20，一张图。频率这里有问题。
+frequency sweep也需要定量的和DEM和COMSOL作比较。
+use different line types. 
+需要一个convergence check. 
+纵轴。需要更多的线条。
+解释清楚，no enough datapoint导致无法解释collision kernel? 看一下这个问题。
+use origin to plot better? 
+不要使用像EXCEL图片的图像。
+separation and purification, powder tech, advanced powder tech (不要). 
+再看一次这个paper, economic 不要。

@@ -6,7 +6,7 @@ import math
 def _min_distance_random_sampling(width, height, min_dist, target_count, rng):
     """
     生成均匀随机分布的采样点，同时保证任意两点之间的距离不少于 min_dist。
-    采用格点加邻域检测的拒绝采样方式，可覆盖整个区域。
+    使用最简单、最可靠的暴力检查方法。
 
     :param width: 区域宽度 (x 方向长度)
     :param height: 区域高度 (y 方向长度)
@@ -18,59 +18,125 @@ def _min_distance_random_sampling(width, height, min_dist, target_count, rng):
     if target_count == 0:
         return np.zeros((0, 2), dtype=float)
 
-    cell_size = min_dist
-    grid_w = max(1, int(np.ceil(width / cell_size)))
-    grid_h = max(1, int(np.ceil(height / cell_size)))
-    grid = -np.ones((grid_w, grid_h), dtype=int)
-
+    print(f"开始生成 {target_count} 个粒子，最小距离要求: {min_dist*1e6:.2f} 微米")
+    print(f"域大小: {width*1000:.2f}mm x {height*1000:.2f}mm")
+    
+    # 使用列表存储点，确保类型一致
     samples = []
     min_dist_sq = min_dist * min_dist
+    
+    # 计算理论最大容量
+    max_capacity = int((width * height) / (np.pi * (min_dist / 2) ** 2))
+    print(f"理论最大容量: {max_capacity} 个粒子")
+    if target_count > max_capacity * 0.9:
+        print(f"警告: 粒子数量 {target_count} 超过理论最大容量的90%，可能无法全部放置")
 
-    def _grid_coords(point):
-        gx = int(point[0] / cell_size)
-        gy = int(point[1] / cell_size)
-        return min(gx, grid_w - 1), min(gy, grid_h - 1)
-
-    max_total_attempts = max(10 * target_count, 1000)
+    max_total_attempts = max(1000 * target_count, 100000)
     attempts = 0
+    consecutive_failures = 0
 
-    while len(samples) < target_count and attempts < max_total_attempts:
-        candidate = rng.uniform([0.0, 0.0], [width, height])
+    while len(samples) < target_count:
+        if attempts >= max_total_attempts:
+            raise RuntimeError(
+                f"达到最大尝试次数 {max_total_attempts}，无法生成 {target_count} 个粒子。"
+                f"已生成 {len(samples)} 个。请减少粒子数量或增大域尺寸。"
+            )
+        
+        # 生成候选点
+        candidate_x = float(rng.uniform(0.0, width))
+        candidate_y = float(rng.uniform(0.0, height))
+        candidate = np.array([candidate_x, candidate_y], dtype=np.float64)
         attempts += 1
 
-        cgx, cgy = _grid_coords(candidate)
-        x_min = max(cgx - 1, 0)
-        x_max = min(cgx + 2, grid_w)
-        y_min = max(cgy - 1, 0)
-        y_max = min(cgy + 2, grid_h)
-
+        # 严格检查：与所有已存在的点比较距离
         too_close = False
-        for gx in range(x_min, x_max):
-            for gy in range(y_min, y_max):
-                neighbor_idx = grid[gx, gy]
-                if neighbor_idx == -1:
-                    continue
-                neighbor_point = samples[neighbor_idx]
-                dx = candidate[0] - neighbor_point[0]
-                dy = candidate[1] - neighbor_point[1]
-                if dx * dx + dy * dy < min_dist_sq:
-                    too_close = True
-                    break
-            if too_close:
-                break
+        if len(samples) > 0:
+            # 转换为numpy数组进行向量化计算
+            existing = np.array(samples, dtype=np.float64)
+            dx = existing[:, 0] - candidate_x
+            dy = existing[:, 1] - candidate_y
+            dist_sq = dx * dx + dy * dy
+            min_existing_dist_sq = np.min(dist_sq)
+            
+            if min_existing_dist_sq < min_dist_sq:
+                too_close = True
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
 
         if too_close:
             continue
 
-        samples.append(candidate)
-        grid[cgx, cgy] = len(samples) - 1
+        # 验证通过，添加新点
+        samples.append([candidate_x, candidate_y])
+        
+        # 每100个粒子打印一次进度
+        if len(samples) % max(1, target_count // 20) == 0 or len(samples) == target_count:
+            print(f"已生成 {len(samples)}/{target_count} 个粒子 (尝试次数: {attempts}, 成功率: {len(samples)/attempts*100:.2f}%)")
 
-    if len(samples) < target_count:
-        raise RuntimeError(
-            f"无法在给定的最小距离 {min_dist} 内生成 {target_count} 个不重叠粒子，请减少粒子数量或放大域尺寸。"
-        )
+    # 转换为numpy数组
+    samples_array = np.array(samples, dtype=np.float64)
+    
+    # 最终严格验证：使用scipy的pdist进行高效验证
+    print(f"开始最终验证，检查 {len(samples_array)} 个粒子之间的距离...")
+    try:
+        from scipy.spatial.distance import pdist
+        distances = pdist(samples_array)
+        min_actual_dist = float(np.min(distances))
+        violations = distances < (min_dist - 1e-12)
+        violation_count = int(np.sum(violations))
+        
+        if violation_count > 0:
+            # 找出违规的点对
+            from scipy.spatial.distance import squareform
+            dist_matrix = squareform(distances)
+            viol_pairs = []
+            for i in range(len(samples_array)):
+                for j in range(i + 1, len(samples_array)):
+                    if dist_matrix[i, j] < min_dist - 1e-12:
+                        viol_pairs.append((i, j, dist_matrix[i, j]))
+                        if len(viol_pairs) >= 10:
+                            break
+                if len(viol_pairs) >= 10:
+                    break
+            
+            print(f"发现 {violation_count} 个距离违规！")
+            for i, (idx1, idx2, dist) in enumerate(viol_pairs[:10]):
+                print(f"  违规 {i+1}: 粒子 {idx1} ({samples_array[idx1]*1000}) 和 {idx2} ({samples_array[idx2]*1000}) 距离 {dist*1e6:.4f} 微米 < {min_dist*1e6:.4f} 微米")
+            
+            raise RuntimeError(
+                f"验证失败: 发现 {violation_count} 个距离违规。最小实际距离: {min_actual_dist*1e6:.4f} 微米, 要求: {min_dist*1e6:.4f} 微米"
+            )
+        
+        print(f"✓ 验证通过: 所有 {len(samples_array)} 个粒子之间距离 >= {min_dist*1e6:.4f} 微米")
+        print(f"  最小实际距离: {min_actual_dist*1e6:.4f} 微米")
+        print(f"  平均距离: {np.mean(distances)*1e6:.4f} 微米")
+        
+    except ImportError:
+        # 如果没有scipy，使用简单的双重循环验证
+        print("警告: 未安装scipy，使用较慢的验证方法")
+        min_actual_dist = float('inf')
+        violation_count = 0
+        
+        for i in range(len(samples_array)):
+            for j in range(i + 1, len(samples_array)):
+                dx = samples_array[i, 0] - samples_array[j, 0]
+                dy = samples_array[i, 1] - samples_array[j, 1]
+                dist = np.sqrt(dx * dx + dy * dy)
+                min_actual_dist = min(min_actual_dist, dist)
+                if dist < min_dist - 1e-12:
+                    violation_count += 1
+                    if violation_count <= 10:
+                        print(f"违规: 粒子 {i} 和 {j} 距离 {dist*1e6:.4f} 微米 < {min_dist*1e6:.4f} 微米")
+        
+        if violation_count > 0:
+            raise RuntimeError(
+                f"验证失败: 发现 {violation_count} 个距离违规。最小实际距离: {min_actual_dist*1e6:.4f} 微米, 要求: {min_dist*1e6:.4f} 微米"
+            )
+        
+        print(f"✓ 验证通过: 所有粒子之间距离 >= {min_dist*1e6:.4f} 微米 (最小: {min_actual_dist*1e6:.4f} 微米)")
 
-    return np.asarray(samples, dtype=float)
+    return samples_array
 
 
 def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2000, init_mode='linear'):
@@ -83,6 +149,7 @@ def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2
     :param density: 每个粒子的密度，单位：kg/m^3
     :param init_mode: 初始化模式
         - 'linear': 直线排布（在域内均匀分布）
+        - 'linear_poly': 直线排布但粒径在 0.1μm~10μm 区间随机
         - 'random': 在计算域内随机分布
         - 'uniform': 在计算域内均匀分布
         - 'sample': 样例分布（所有粒子竖着堆砌在 x=8.5mm 与 x=25.5mm）
@@ -91,16 +158,26 @@ def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2
     """
     Lx, Ly = domain_size
     
+    radii = None
+
     if init_mode == 'linear':
         # 直线排布模式：在域内均匀分布粒子
         # 在域内均匀分布粒子，不扩展到域外
         x_positions = np.linspace(0, Lx, N, endpoint=True)
         y_position = Ly / 2  # y坐标固定在域中心
         positions = np.column_stack((x_positions, np.full(N, y_position)))
+    elif init_mode == 'linear_poly':
+        # 直线排布，但粒径随机
+        x_positions = np.linspace(0, Lx, N, endpoint=True)
+        y_position = Ly / 2
+        positions = np.column_stack((x_positions, np.full(N, y_position)))
+        rng = np.random.default_rng()
+        diameters_poly = rng.uniform(0.1e-6, 10e-6, size=N)
+        radii = diameters_poly / 2.0
         
     elif init_mode == 'random':
-        # 随机分布模式：使用拒绝采样 + 网格加速，保证粒子之间至少相距5微米
-        min_center_distance = 5e-6  # 5 微米
+        # 随机分布模式：使用拒绝采样 + 网格加速，保证粒子之间至少相距2微米
+        min_center_distance = 2e-6  # 2 微米
         rng = np.random.default_rng()
         positions = _min_distance_random_sampling(Lx, Ly, min_center_distance, N, rng)
         
@@ -222,7 +299,8 @@ def initialize_particles(N=0, domain_size=(0.01, 0.01), diameter=2e-6, density=2
         raise ValueError(f"不支持的初始化模式: {init_mode}。支持的模式: 'linear', 'random', 'uniform', 'sample', 'normal'")
 
     velocities = np.zeros_like(positions)
-    radii = np.ones(N) * (diameter / 2)
+    if radii is None:
+        radii = np.ones(N) * (diameter / 2)
     # 计算质量（三维近似球体：m = ρ * 4/3 * π * r^3）
     mass = density * 4/3 * np.pi * radii**3
     

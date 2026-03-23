@@ -161,7 +161,7 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000)
 
     # 训练直到达到目标损失
-    target_loss = 2.5e-5  # 更严格的目标
+    target_loss = 5e-5 # 更严格的目标
     print_interval = 500
     epoch = 0
     losses = []
@@ -202,7 +202,7 @@ def main():
     model.eval()
     with torch.no_grad():
         # 更密集的测试点，覆盖完整范围
-        test_x = torch.linspace(x_min, x_max, 100, device=device).unsqueeze(1)
+        test_x = torch.linspace(x_min, x_max, 1000, device=device).unsqueeze(1)
         test_inp = (test_x - x_min) / (x_max - x_min)
         pred_norm = model(test_inp)
         pred_force = pred_norm * force_sigma + force_mu

@@ -11,7 +11,7 @@ except Exception:
     from mechanisms.Stokes_drag import compute_air_velocity_due_to_sound
 
 # 物理参数
-frequency = 10000  # Hz
+frequency = 12000  # Hz
 sound_pressure_level = 140  # dB
 sound_speed = 340  # m/s
 viscosity = 1.8e-5  # Pa·s
@@ -146,7 +146,7 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000)
 
     # 训练直到达到目标损失
-    target_loss = 1e-9
+    target_loss = 1e-8
     print_interval = 500
     epoch = 0
     losses = []
@@ -188,7 +188,7 @@ def main():
     model.eval()
     with torch.no_grad():
         # 测试点
-        test_t = torch.linspace(0, t_range, 100, device=device).unsqueeze(1)
+        test_t = torch.linspace(0, t_range, 1000, device=device).unsqueeze(1)
         test_t_scaled = (test_t - t_min) / (t_max - t_min)
         
         pred_norm = model(test_t_scaled)

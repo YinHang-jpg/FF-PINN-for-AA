@@ -1,7 +1,7 @@
 # sound_source_standing.py
 import numpy as np
 
-frequency = 10000
+frequency = 12000
 sound_pressure_level = 168.5  # dB
 
 def spl_to_pressure(spl, reference_pressure=20e-6):

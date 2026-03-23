@@ -130,15 +130,18 @@ def handle_collisions(positions_t, velocities_t, radii_t, mass_t, particle_count
         collision_pairs = []
         
         # 检查相邻粒子对（只考虑x方向距离）
+        # 对于一维x方向碰撞，如果粒子已按x坐标排序，只需检查相邻粒子对即可
+        # 因为如果粒子A和粒子C重叠，而粒子B在中间，那么B一定和A或C重叠
         for idx in range(len(sorted_indices) - 1):
             i = sorted_indices[idx]
             j = sorted_indices[idx + 1]
             
-            # 计算x方向距离
-            x_dist = abs(x_positions[i] - x_positions[j])
+            # 计算x方向距离（由于已排序，j的x坐标 >= i的x坐标）
+            x_dist = x_positions[j] - x_positions[i]
             sum_radii = radii_np[i] + radii_np[j]
             
             # 如果x方向距离小于半径和，则发生碰撞
+            # 注意：x_dist必须严格小于sum_radii才算碰撞（等于时刚好接触，不算碰撞）
             if x_dist < sum_radii:
                 collision_pairs.append((i, j))
         
@@ -223,9 +226,14 @@ def main():
             pass
         torch.backends.cudnn.benchmark = True
 
-    # 初始化粒子
+    # 初始化粒子（使用 initialization/particle_initialization.py）
     domain_size = (0.034, 0.034)  # 34mm x 34mm
-    positions_np, velocities_np, radii_np, mass_np = initialize_particles(N=5000, domain_size=domain_size)
+    # 使用 linear 模式：水平均匀分布，x坐标均匀分布，y坐标固定在域中心
+    # 注意：频率会通过 sound_source_standing.py 中的 frequency 变量动态变化
+    positions_np, velocities_np, radii_np, mass_np = initialize_particles(
+        N=12000, domain_size=domain_size, diameter=fixed_diameter, 
+        density=particle_density, init_mode='linear'
+    )
     initial_positions = positions_np.copy()
     initial_count = len(positions_np)
 
@@ -253,6 +261,7 @@ def main():
     
     # 开始计算
     # 现在支持多周期仿真，使用周期性归一化
+    # 注意：frequency 来自 initialization/sound_source_standing.py，会在 freq_sweep.py 中动态更新
     period = 1.0 / frequency  # 一个周期的时间
     max_simulation_time = 10 * period  # 仿真10个周期
     steps = 10000
@@ -514,50 +523,24 @@ def main():
     
     ax3.legend()
     
-    # 图4：每个时步的碰撞趋势（回归曲线，严格为正）
+    # 图4：每个时步的碰撞趋势（直接绘制每个时步的碰撞次数）
     ax4 = plt.subplot(2, 2, 4)
     if len(collisions_per_step) > 0:
-        steps_arr = np.arange(1, len(collisions_per_step) + 1, dtype=float)
-        values = np.asarray(collisions_per_step, dtype=float)
+        steps_arr = np.arange(1, len(collisions_per_step) + 1, dtype=int)
+        values = np.asarray(collisions_per_step, dtype=int)
         
-        # 多项式回归（自适应阶数，最多3阶，至少1阶），在对数域拟合以确保输出严格为正
-        try:
-            deg = 3 if len(values) >= 10 else (2 if len(values) >= 5 else 1)
-            # 确保正值：选择一个数据相关的微小正数作为偏移
-            positive_values = values[values > 0]
-            if positive_values.size > 0:
-                eps = max(1e-9, float(np.percentile(positive_values, 5)) * 0.05)
-            else:
-                eps = 1e-6
-            y_fit_input = np.log(values + eps)
-            coeffs = np.polyfit(steps_arr, y_fit_input, deg=deg)
-            poly = np.poly1d(coeffs)
-            x_fit = np.linspace(float(steps_arr[0]), float(steps_arr[-1]), num=min(1000, max(100, len(values))))
-            y_fit = np.exp(poly(x_fit))  # 严格为正
-            ax4.plot(x_fit, y_fit, '-', linewidth=2.0, color='crimson', alpha=0.95, label=f'Positive regression (deg={deg})')
-        except Exception:
-            # 回退：对数域线性拟合；若仍失败则绘制一条小的正常数
-            try:
-                eps = 1e-6
-                y_fit_input = np.log(values + eps)
-                coeffs = np.polyfit(steps_arr, y_fit_input, deg=1)
-                poly = np.poly1d(coeffs)
-                x_fit = np.linspace(float(steps_arr[0]), float(steps_arr[-1]), num=min(1000, max(100, len(values))))
-                y_fit = np.exp(poly(x_fit))
-                ax4.plot(x_fit, y_fit, '-', linewidth=2.0, color='crimson', alpha=0.95, label='Positive regression (linear)')
-            except Exception:
-                x_fit = np.linspace(float(steps_arr[0]), float(steps_arr[-1]), num=min(1000, max(100, len(values))))
-                y_fit = np.full_like(x_fit, 1e-6)
-                ax4.plot(x_fit, y_fit, '-', linewidth=2.0, color='crimson', alpha=0.95, label='Positive baseline')
+        # 直接绘制每个时步的碰撞次数，用竖直线连接到x轴，并在顶点标出
+        ax4.vlines(steps_arr, 0, values, colors='crimson', alpha=0.4, linewidth=1.0)
+        ax4.scatter(steps_arr, values, s=12, color='crimson', alpha=0.8, zorder=3, label='Collisions per step')
         
         ax4.set_xlabel('Time Step')
-        ax4.set_ylabel('Collisions (positive regression)')
-        ax4.set_title('Collision Trend (positive regression)')
+        ax4.set_ylabel('Collisions per Step')
+        ax4.set_title('Collision Trend')
         ax4.grid(True, alpha=0.3)
         ax4.legend()
     else:
         ax4.text(0.5, 0.5, 'No collision data', ha='center', va='center', transform=ax4.transAxes)
-        ax4.set_title('Collision Trend (positive regression)')
+        ax4.set_title('Collision Trend')
     
     plt.tight_layout()
     
@@ -579,6 +562,15 @@ def main():
 
     # 自动保存x_grid与relative_change到 'density_curve_clustering.txt'（列堆叠存储、浮点数）
     np.savetxt('density_curve_clustering.txt', np.vstack([x_grid, relative_change]).T)
+    
+    # 保存每个时步的碰撞次数到 'collisions_per_step.txt'
+    if len(collisions_per_step) > 0:
+        steps_arr = np.arange(1, len(collisions_per_step) + 1, dtype=int)
+        collisions_arr = np.asarray(collisions_per_step, dtype=int)
+        # 保存为两列：时步，碰撞次数
+        np.savetxt('collisions_per_step.txt', np.vstack([steps_arr, collisions_arr]).T, 
+                   fmt='%d', header='step collisions', comments='')
+        print(f"碰撞数据已保存至: collisions_per_step.txt (共 {len(collisions_per_step)} 个时步)")
 
 
 if __name__ == "__main__":
