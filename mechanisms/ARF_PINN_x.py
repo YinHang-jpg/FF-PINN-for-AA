@@ -99,34 +99,30 @@ class ARFNet(nn.Module):
         return self.layers(fourier_features)
 
 
-def theoretical_arf(x, particle_radius=1e-6):
+def theoretical_spgf_factor_x(x):
     """
-    基于 ARF.py 中的物理公式计算理论声辐射力（t=0）：
-    F = π d_p^2 [p(x-√2 d_p/4,0) - p(x+√2 d_p/4,0)] / 4
-    其中 p(x,0) = 2π A p0 γ sin(k x) / λ
+    SPGF 空间因子（无量纲），用于训练位置相关因子本身。
+    取 cos(kx)，范围 [-1, 1]。
     """
     wavelength = c_0 / frequency
     k = 2 * np.pi / wavelength
-
-    d_p = 2.0 * particle_radius
-    offset = np.sqrt(2.0) * d_p / 4.0
-    x_front = x - offset
-    x_back = x + offset
-
-    # t=0时，cos(ωt) = cos(0) = 1
-    # 与 ARF.py 保持一致：p(x,0) = 2*(2π) A p0 γ sin(kx) / λ
-    A = torch.tensor(get_amplitude(), dtype=x.dtype, device=x.device)
-    p_front = 2.0 * 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_front) / wavelength
-    p_back  = 2.0 * 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_back ) / wavelength
-
-    pressure_diff = p_front - p_back
-    force_magnitude = np.pi * d_p**2 * pressure_diff / 4.0
-    return force_magnitude
+    return torch.cos(k * x)
 
 
 def main():
     import matplotlib.pyplot as plt
     from torch.utils.data import DataLoader, TensorDataset
+    plt.rcParams.update({
+        "figure.figsize": (7, 4),
+        "figure.dpi": 120,
+        "savefig.dpi": 300,
+        "font.size": 10,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+    })
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("基于 ARF 解析公式的 PINN 训练（压力梯度力）…")
@@ -141,7 +137,7 @@ def main():
     N = 20000  # 增加数据量
     x = (torch.rand(N, 1, device=device) * x_range - x_range/2).float()  # [-25.5, 25.5] mm
 
-    F_theory = theoretical_arf(x).detach()
+    F_theory = theoretical_spgf_factor_x(x).detach()
 
     # 特征缩放（仅输入x）
     x_min, x_max = -x_range/2, x_range/2
@@ -161,7 +157,7 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000)
 
     # 训练直到达到目标损失
-    target_loss = 2e-5 # 更严格的目标
+    target_loss = 1e-5 # 更严格的目标
     print_interval = 500
     epoch = 0
     losses = []
@@ -189,12 +185,12 @@ def main():
         epoch += 1
 
     # 可视化
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(7, 4))
     plt.plot(losses)
     plt.yscale('log')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss')
+    plt.title('SPGF Spatial-Force PINN Training Loss')
     plt.grid(True)
     plt.show()
     
@@ -206,7 +202,7 @@ def main():
         test_inp = (test_x - x_min) / (x_max - x_min)
         pred_norm = model(test_inp)
         pred_force = pred_norm * force_sigma + force_mu
-        true_force = theoretical_arf(test_x)
+        true_force = theoretical_spgf_factor_x(test_x)
         
         # 计算整体误差统计
         relative_errors = torch.abs(pred_force - true_force) / (torch.abs(true_force) + 1e-30)
@@ -219,25 +215,26 @@ def main():
 
         # 绘制 F(x) 理论值 与 模型预测 曲线
         x_mm = (test_x * 1000.0).detach().cpu().numpy().flatten()
-        pred_pn = (pred_force * 1e12).detach().cpu().numpy().flatten()
-        true_pn = (true_force * 1e12).detach().cpu().numpy().flatten()
-        plt.figure(figsize=(10, 5))
-        plt.plot(x_mm, true_pn, 'b-', label='理论值', linewidth=2)
-        plt.plot(x_mm, pred_pn, 'r--', label='PINN预测', linewidth=1.5)
-        plt.xlabel('位置 x (mm)')
-        plt.ylabel('声辐射力 F (pN)')
-        plt.title('F(x) 理论 vs PINN')
+        pred_pn = pred_force.detach().cpu().numpy().flatten()
+        true_pn = true_force.detach().cpu().numpy().flatten()
+        plt.figure(figsize=(7, 4))
+        plt.plot(x_mm, true_pn, 'b-', label='Theory', linewidth=2)
+        plt.plot(x_mm, pred_pn, 'r--', label='PINN prediction', linewidth=1.5)
+        plt.xlabel('Position x (mm)')
+        plt.ylabel('Position factor cos(kx) (dimensionless)')
+        plt.title('SPGF position factor: theory vs PINN')
         plt.grid(True, alpha=0.3)
         plt.legend()
+        plt.ylim(-1.1, 1.1)
         plt.xlim(x_min * 1000.0, x_max * 1000.0)
         plt.tight_layout()
         plt.show()
-        print("\n位置(mm) | 预测力(pN) | 理论力(pN) | 相对误差")
+        print("\nPosition (mm) | Pred | Theory | Relative error")
         print("-"*60)
         for i in range(0, 100, 10):  # 每10个点显示一个
             xv = float(test_x[i].item() * 1000)
-            pv = float(pred_force[i].item() * 1e12)  # 转换为pN
-            tv = float(true_force[i].item() * 1e12)  # 转换为pN
+            pv = float(pred_force[i].item())
+            tv = float(true_force[i].item())
             rel = abs(pv - tv) / (abs(tv) + 1e-30)
             print(f"{xv:8.1f} | {pv:11.2e} | {tv:11.2e} | {rel:8.1%}")
 

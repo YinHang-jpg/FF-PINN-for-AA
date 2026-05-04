@@ -5,12 +5,24 @@ import torch.optim as optim
 import json
 import os
 import sys
+from functools import partial
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-Re_FIXED = 1.0
+_DEM_WAKE_DIR = os.path.join(PROJECT_ROOT, "DEM_wake")
+if _DEM_WAKE_DIR not in sys.path:
+    sys.path.insert(0, _DEM_WAKE_DIR)
+from DEM_wake import WAKE_CLOSURE_RE_DEFAULT as Re_FIXED
+
+_PINN_WAKE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PINN_WAKE_DIR not in sys.path:
+    sys.path.insert(0, _PINN_WAKE_DIR)
+from wake_theory_torch import dimless_vt_oseen as _dimless_vt_oseen  # noqa: E402
+from wake_pinn_train_config import R_OSEEN_R_MAX, R_OSEEN_R_MIN  # noqa: E402
+
+theoretical_Vt_Oseen = partial(_dimless_vt_oseen, Re=Re_FIXED)
 
 
 class Normalizer:
@@ -84,16 +96,6 @@ class WakeNetVtOseen(nn.Module):
         return self.layers(x)
 
 
-def theoretical_Vt_Oseen(R, Theta, Re=Re_FIXED):
-    cos_t = torch.cos(Theta)
-    sin_t = torch.sin(Theta)
-    exp_arg = (-R * Re / 4) * (1 - cos_t)
-    exp_arg = torch.clamp(exp_arg, -500, 500)
-    exp_term = torch.exp(exp_arg)
-    R2 = R ** 2
-    return sin_t * (1 / R2 + 3 * exp_term) / (4 * R)
-
-
 def main():
     import matplotlib.pyplot as plt
 
@@ -101,7 +103,7 @@ def main():
     print("PINN 训练: Wake Oseen 切向速度 Vt_Oseen(R, Theta)")
     print(f"device: {device}, Re = {Re_FIXED}")
 
-    R_min, R_max = 2.0, 30.0
+    R_min, R_max = R_OSEEN_R_MIN, R_OSEEN_R_MAX
     Theta_min, Theta_max = 0.0, 2 * np.pi
 
     N = 40000
@@ -180,12 +182,12 @@ def main():
         pred_2d = pred_val.reshape(n_test, n_test).cpu().numpy()
         true_2d = true_val.reshape(n_test, n_test).cpu().numpy()
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        im0 = axes[0].imshow(true_2d, extent=[0, 360, R_max, R_min], aspect='auto', cmap='RdBu_r')
+        im0 = axes[0].imshow(true_2d, origin='lower', extent=[0, 360, R_min, R_max], aspect='auto', cmap='RdBu_r')
         axes[0].set_title('Theoretical Vt_Oseen')
         axes[0].set_xlabel('Theta (deg)')
         axes[0].set_ylabel('R')
         plt.colorbar(im0, ax=axes[0])
-        im1 = axes[1].imshow(pred_2d, extent=[0, 360, R_max, R_min], aspect='auto', cmap='RdBu_r')
+        im1 = axes[1].imshow(pred_2d, origin='lower', extent=[0, 360, R_min, R_max], aspect='auto', cmap='RdBu_r')
         axes[1].set_title('PINN Predicted Vt_Oseen')
         axes[1].set_xlabel('Theta (deg)')
         axes[1].set_ylabel('R')

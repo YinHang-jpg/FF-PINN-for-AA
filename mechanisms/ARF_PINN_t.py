@@ -101,12 +101,23 @@ def theoretical_time_factor(t):
     理论时间因子：cos(ω t)
     """
     omega = 2 * np.pi * frequency
-    return torch.cos(omega * t)
+    return torch.cos(omega * t)  # dimensionless in [-1, 1]
 
 
 def main():
     import matplotlib.pyplot as plt
     from torch.utils.data import DataLoader, TensorDataset
+    plt.rcParams.update({
+        "figure.figsize": (7, 4),
+        "figure.dpi": 120,
+        "savefig.dpi": 300,
+        "font.size": 10,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+    })
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("基于 ARF 解析公式的 PINN 训练（时间因子）…")
@@ -168,12 +179,12 @@ def main():
         epoch += 1
 
     # 可视化
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(7, 4))
     plt.plot(losses)
     plt.yscale('log')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss')
+    plt.title('SPGF Time-Factor PINN Training Loss')
     plt.grid(True)
     plt.show()
     
@@ -201,14 +212,15 @@ def main():
         tt = (test_t * 1e6).detach().cpu().numpy().flatten()
         pred_np = pred_time.detach().cpu().numpy().flatten()
         true_np = true_time.detach().cpu().numpy().flatten()
-        plt.figure(figsize=(10,5))
-        plt.plot(tt, true_np, 'b-', label='理论值', linewidth=2)
-        plt.plot(tt, pred_np, 'r--', label='PINN预测', linewidth=1.5)
-        plt.xlabel('时间 (μs)')
-        plt.ylabel('时间因子 cos(ωt)')
-        plt.title('ARF 时间因子 vs 时间')
+        plt.figure(figsize=(7, 4))
+        plt.plot(tt, true_np, 'b-', label='Theory', linewidth=2)
+        plt.plot(tt, pred_np, 'r--', label='PINN prediction', linewidth=1.5)
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Time factor cos(ωt) (dimensionless)')
+        plt.title('SPGF time factor vs time (theory vs PINN)')
         plt.grid(True, alpha=0.3)
         plt.legend()
+        plt.ylim(-1.1, 1.1)
         plt.tight_layout()
         plt.show()
 

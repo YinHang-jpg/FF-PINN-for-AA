@@ -9,13 +9,13 @@ import matplotlib.colors as mcolors
 from matplotlib.animation import FuncAnimation
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CHAR_LENGTH_M = 5e-4
+STATIC_OUT = os.path.join(SCRIPT_DIR, "WAKE_binary_test_snapshot.png")
 
 # 导入 DEM 数值计算
 WAKE_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), 'DEM_wake')
 if WAKE_DIR not in sys.path:
     sys.path.insert(0, WAKE_DIR)
-from DEM_wake import acoustic_wake_velocity
+from DEM_wake import CHAR_LENGTH_M, WAKE_CLOSURE_RE_DEFAULT, acoustic_wake_velocity
 
 
 # ============ PINN 网络定义 ============
@@ -109,11 +109,11 @@ def wake_velocity_dem(source_pos, source_vel, targets):
     N = len(targets)
     uv = np.zeros((N, 2))
     for i in range(N):
-        uv[i] = acoustic_wake_velocity(source_pos, targets[i], source_vel, Re)
+        uv[i] = acoustic_wake_velocity(source_pos, targets[i], source_vel, RE_CLOSURE)
     return uv
 
 
-def wake_velocity_pinn(source_pos, targets):
+def wake_velocity_pinn(source_pos, source_vel, targets):
     """PINN 模型批量推理，拼接方式与 DEM_wake.py 一致"""
     x_rel = targets[:, 0] - source_pos[0]
     y_rel = targets[:, 1] - source_pos[1]
@@ -144,13 +144,15 @@ def wake_velocity_pinn(source_pos, targets):
     vr[bl] = ((5 - Rb) * vrPP[bl] + (Rb - 2) * vrOs[bl]) / 3
     vt[bl] = ((5 - Rb) * vtPP[bl] + (Rb - 2) * vtOs[bl]) / 3
 
-    cos_th = np.cos(Th_np);  sin_th = np.sin(Th_np)
+    cos_th = np.cos(Th_np)
+    sin_th = np.sin(Th_np)
     U_v = vr * cos_th - vt * sin_th
     V_v = vr * sin_th + vt * cos_th
 
-    x_v = x_rel[valid]
-    U_abs = np.abs(U_v)
-    U_v = np.where(x_v > 0, -U_abs, -U_abs * 0.5)
+    # 无量纲 → m/s（与 DEM_wake.acoustic_wake_velocity；勿对 vx 做半平面修正）
+    source_speed = np.linalg.norm(source_vel)
+    U_v = U_v * source_speed
+    V_v = V_v * source_speed
 
     U_v = np.where(np.isfinite(U_v), U_v, 0.0)
     V_v = np.where(np.isfinite(V_v), V_v, 0.0)
@@ -159,7 +161,7 @@ def wake_velocity_pinn(source_pos, targets):
 
 
 # ============ 物理参数 ============
-Re = 1.0
+RE_CLOSURE = WAKE_CLOSURE_RE_DEFAULT  # 无量纲闭式/PINN 参量（见 DEM_wake）；勿与粒子雷诺数 Re 混名
 viscosity = 1.8e-5
 d_p = 2e-6
 C_c = 1.083
@@ -170,31 +172,54 @@ drag_coeff = 3.0 * np.pi * viscosity * d_p / C_c
 tau = mass_p / drag_coeff  # Stokes 松弛时间
 
 # ============ 场景设置 ============
-dt = 0.02
+dt = 0.01
 steps = 300
 
 source_pos0 = np.array([0.008, 0.0])
-source_vel = np.array([-0.001, 0.0])
+source_vel = np.array([-0.01, 0.0])
 
-N_passive = 30
-rng = np.random.default_rng(42)
-passive_init = rng.uniform(-0.008, 0.008, (N_passive, 2))
+# 被动粒子改为规则矩形阵列（替代随机分布）
+N_COLS = 6
+N_ROWS = 5
+x_passive = np.linspace(-0.007, 0.007, N_COLS)
+y_passive = np.linspace(-0.006, 0.006, N_ROWS)
+XP, YP = np.meshgrid(x_passive, y_passive)
+passive_init = np.column_stack([XP.ravel(), YP.ravel()])
+N_passive = passive_init.shape[0]
 
 pos_dem = passive_init.copy();  vel_dem = np.zeros((N_passive, 2))
 pos_pinn = passive_init.copy(); vel_pinn = np.zeros((N_passive, 2))
 
-# quiver 网格
+def build_polar_ring_points(radius, n_rings, center=(0.0, 0.0)):
+    """分圈采样：半径越大每圈点数越多，并做逐圈角度偏移。"""
+    if n_rings < 2:
+        raise ValueError("n_rings 必须 >= 2")
+    cx, cy = center
+    r_samples = np.linspace(radius / n_rings, radius, n_rings)
+    x_points = [cx]
+    y_points = [cy]
+    golden_angle = np.pi * (3.0 - np.sqrt(5.0))
+    for i, r in enumerate(r_samples, start=1):
+        frac = i / n_rings
+        n_theta = max(8, int(round(n_rings * (0.6 + 1.8 * frac))))
+        theta_offset = (i * golden_angle) % (2.0 * np.pi)
+        theta_ring = np.linspace(0.0, 2.0 * np.pi, n_theta, endpoint=False) + theta_offset
+        x_points.extend((cx + r * np.cos(theta_ring)).tolist())
+        y_points.extend((cy + r * np.sin(theta_ring)).tolist())
+    return np.asarray(x_points), np.asarray(y_points)
+
+
+# quiver 采样点（分圈递增密度）
 grid_size = 14
-xg = np.linspace(-0.01, 0.01, grid_size)
-yg = np.linspace(-0.01, 0.01, grid_size)
-XG, YG = np.meshgrid(xg, yg)
-grid_pts = np.column_stack([XG.ravel(), YG.ravel()])
+DOMAIN_RADIUS = 20e-6
+XG, YG = build_polar_ring_points(DOMAIN_RADIUS, grid_size)
+grid_pts = np.column_stack([XG, YG])
 
 # ============ 画布 ============
 fig, (ax_d, ax_p) = plt.subplots(1, 2, figsize=(15, 7), facecolor="#0d1117")
 for ax in (ax_d, ax_p):
     ax.set_facecolor("#0d1117")
-    ax.set_xlim(-0.01, 0.01);  ax.set_ylim(-0.01, 0.01)
+    ax.set_xlim(-DOMAIN_RADIUS, DOMAIN_RADIUS);  ax.set_ylim(-DOMAIN_RADIUS, DOMAIN_RADIUS)
     ax.set_aspect('equal')
     ax.tick_params(colors='white')
     for sp in ax.spines.values():
@@ -204,21 +229,26 @@ ax_d.set_title("DEM (Numerical)", color="white", fontsize=13, pad=10)
 ax_p.set_title("PINN (Model)", color="white", fontsize=13, pad=10)
 
 cmap = plt.cm.plasma
-norm_c = mcolors.Normalize(vmin=0, vmax=0.05)
-ARROW_SCALE = 5e-4
+norm_d = mcolors.Normalize(vmin=0, vmax=1e-6)
+norm_p = mcolors.Normalize(vmin=0, vmax=1e-6)
+ARROW_SCALE = 7e-7
 U0 = np.zeros_like(XG);  V0 = np.zeros_like(YG);  S0 = np.zeros_like(XG)
 
-qkw = dict(cmap=cmap, norm=norm_c, scale=1, scale_units='xy',
-           width=0.0018, headwidth=5, headlength=5, headaxislength=4,
-           alpha=0.7, minlength=0.1)
-quiver_d = ax_d.quiver(XG, YG, U0, V0, S0, **qkw)
-quiver_p = ax_p.quiver(XG, YG, U0, V0, S0, **qkw)
+qkw_base = dict(cmap=cmap, scale=1, scale_units='xy',
+                width=0.0018, headwidth=5, headlength=5, headaxislength=4,
+                alpha=0.7, minlength=0.1)
+quiver_d = ax_d.quiver(XG, YG, U0, V0, S0, norm=norm_d, **qkw_base)
+quiver_p = ax_p.quiver(XG, YG, U0, V0, S0, norm=norm_p, **qkw_base)
 
-for qv, ax in [(quiver_d, ax_d), (quiver_p, ax_p)]:
-    cb = fig.colorbar(qv, ax=ax, fraction=0.046, pad=0.04)
-    cb.set_label("Flow Speed", color="white", fontsize=9)
-    cb.ax.yaxis.set_tick_params(color="white")
-    plt.setp(cb.ax.yaxis.get_ticklabels(), color="white")
+cb_d = fig.colorbar(quiver_d, ax=ax_d, fraction=0.046, pad=0.04)
+cb_d.set_label("Flow Speed", color="white", fontsize=9)
+cb_d.ax.yaxis.set_tick_params(color="white")
+plt.setp(cb_d.ax.yaxis.get_ticklabels(), color="white")
+
+cb_p = fig.colorbar(quiver_p, ax=ax_p, fraction=0.046, pad=0.04)
+cb_p.set_label("Flow Speed", color="white", fontsize=9)
+cb_p.ax.yaxis.set_tick_params(color="white")
+plt.setp(cb_p.ax.yaxis.get_ticklabels(), color="white")
 
 src_d, = ax_d.plot([], [], 'o', color='#00e5ff', ms=10,
                    markeredgecolor='white', markeredgewidth=0.8, zorder=5)
@@ -237,14 +267,15 @@ txt_p = ax_p.text(0.02, 0.96, '', transform=ax_p.transAxes,
 
 # ============ 更新函数 ============
 
-def _update_quiver(source_pos, method):
+def _update_quiver(source_pos, source_vel, method):
     """计算 quiver 场"""
+    targets = grid_pts + source_pos
     if method == 'dem':
-        uv = wake_velocity_dem(source_pos, source_vel, grid_pts)
+        uv = wake_velocity_dem(source_pos, source_vel, targets)
     else:
-        uv = wake_velocity_pinn(source_pos, grid_pts)
-    U = uv[:, 0].reshape(XG.shape)
-    V = uv[:, 1].reshape(YG.shape)
+        uv = wake_velocity_pinn(source_pos, source_vel, targets)
+    U = uv[:, 0]
+    V = uv[:, 1]
     speed = np.sqrt(U ** 2 + V ** 2)
     eps = 1e-12
     Un = U / (speed + eps) * ARROW_SCALE
@@ -252,12 +283,12 @@ def _update_quiver(source_pos, method):
     return Un, Vn, speed
 
 
-def _step_passive(pos, vel, source_pos, method):
+def _step_passive(pos, vel, source_pos, source_vel, method):
     """用 Stokes 阻力推进被动粒子一步（解析积分，精确稳定）"""
     if method == 'dem':
         wake_uv = wake_velocity_dem(source_pos, source_vel, pos)
     else:
-        wake_uv = wake_velocity_pinn(source_pos, pos)
+        wake_uv = wake_velocity_pinn(source_pos, source_vel, pos)
 
     # 解析 Stokes 积分: v' = u + (v - u)*exp(-dt/tau), x' = x + u*dt + (v-u)*tau*(1-exp(-dt/tau))
     exp_f = np.exp(-dt / tau)
@@ -267,30 +298,111 @@ def _step_passive(pos, vel, source_pos, method):
     return pos_new, vel_new
 
 
+def export_simulation_json():
+    """导出 0.00s~0.10s (步长 0.01s) 的粒子轨迹，重复运行时覆盖同名文件。"""
+    export_path = os.path.join(SCRIPT_DIR, "wake_binary_test_positions.json")
+    sample_times = np.round(np.linspace(0.0, 0.1, 11), 2)
+
+    pos_dem_exp = passive_init.copy()
+    vel_dem_exp = np.zeros((N_passive, 2))
+    pos_pinn_exp = passive_init.copy()
+    vel_pinn_exp = np.zeros((N_passive, 2))
+    prev_t = 0.0
+
+    records = []
+    for t in sample_times:
+        delta_t = t - prev_t
+        if delta_t > 0.0:
+            exp_f = np.exp(-delta_t / tau)
+            source_pos_prev = source_pos0 + source_vel * prev_t
+
+            wake_dem = wake_velocity_dem(source_pos_prev, source_vel, pos_dem_exp)
+            dv_dem = vel_dem_exp - wake_dem
+            pos_dem_exp = pos_dem_exp + wake_dem * delta_t + dv_dem * tau * (1.0 - exp_f)
+            vel_dem_exp = wake_dem + dv_dem * exp_f
+
+            wake_pinn = wake_velocity_pinn(source_pos_prev, source_vel, pos_pinn_exp)
+            dv_pinn = vel_pinn_exp - wake_pinn
+            pos_pinn_exp = pos_pinn_exp + wake_pinn * delta_t + dv_pinn * tau * (1.0 - exp_f)
+            vel_pinn_exp = wake_pinn + dv_pinn * exp_f
+
+        records.append({
+            "time_s": float(t),
+            "dem_particles_xy": pos_dem_exp.tolist(),
+            "pinn_particles_xy": pos_pinn_exp.tolist()
+        })
+        prev_t = t
+
+    payload = {
+        "source_particle_initial_position_xy_m": source_pos0.tolist(),
+        "source_particle_initial_velocity_xy_mps": source_vel.tolist(),
+        "passive_particles_initial_positions_xy_m": passive_init.tolist(),
+        "time_series": records
+    }
+
+    with open(export_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print(f"已导出 JSON: {export_path}")
+
+
 def update(frame):
     global pos_dem, vel_dem, pos_pinn, vel_pinn
 
     source_pos = source_pos0 + source_vel * dt * frame
 
     # DEM 侧
-    Ud, Vd, Sd = _update_quiver(source_pos, 'dem')
+    Ud, Vd, Sd = _update_quiver(source_pos, source_vel, 'dem')
     quiver_d.set_UVC(Ud, Vd, Sd)
-    pos_dem, vel_dem = _step_passive(pos_dem, vel_dem, source_pos, 'dem')
-    src_d.set_data([source_pos[0]], [source_pos[1]])
-    pas_d.set_data(pos_dem[:, 0], pos_dem[:, 1])
-    txt_d.set_text(f"t = {frame * dt:.2f} s\npassive: {N_passive}")
+    s_max_d = Sd.max() if Sd.max() > 1e-30 else 1e-6
+    norm_d.vmax = s_max_d
+    pos_dem, vel_dem = _step_passive(pos_dem, vel_dem, source_pos, source_vel, 'dem')
+    src_d.set_data([0.0], [0.0])
+    rel_dem = pos_dem - source_pos
+    pas_d.set_data(rel_dem[:, 0], rel_dem[:, 1])
+    txt_d.set_text(f"t = {frame * dt:.2f} s\npassive: {N_passive}\nframe: particle-centered")
 
     # PINN 侧
-    Up, Vp, Sp = _update_quiver(source_pos, 'pinn')
+    Up, Vp, Sp = _update_quiver(source_pos, source_vel, 'pinn')
     quiver_p.set_UVC(Up, Vp, Sp)
-    pos_pinn, vel_pinn = _step_passive(pos_pinn, vel_pinn, source_pos, 'pinn')
-    src_p.set_data([source_pos[0]], [source_pos[1]])
-    pas_p.set_data(pos_pinn[:, 0], pos_pinn[:, 1])
-    txt_p.set_text(f"t = {frame * dt:.2f} s\npassive: {N_passive}")
+    s_max_p = Sp.max() if Sp.max() > 1e-30 else 1e-6
+    norm_p.vmax = s_max_p
+    pos_pinn, vel_pinn = _step_passive(pos_pinn, vel_pinn, source_pos, source_vel, 'pinn')
+    src_p.set_data([0.0], [0.0])
+    rel_pinn = pos_pinn - source_pos
+    pas_p.set_data(rel_pinn[:, 0], rel_pinn[:, 1])
+    txt_p.set_text(f"t = {frame * dt:.2f} s\npassive: {N_passive}\nframe: particle-centered")
 
     return (quiver_d, quiver_p, src_d, src_p, pas_d, pas_p, txt_d, txt_p)
 
 
+def render_static_snapshot():
+    """渲染并保存粒子参考系下的初始静态图（覆盖同名文件）。"""
+    source_pos = source_pos0.copy()
+
+    Ud, Vd, Sd = _update_quiver(source_pos, source_vel, 'dem')
+    quiver_d.set_UVC(Ud, Vd, Sd)
+    s_max_d = Sd.max() if Sd.max() > 1e-30 else 1e-6
+    norm_d.vmax = s_max_d
+    src_d.set_data([0.0], [0.0])
+    rel_dem0 = passive_init - source_pos
+    pas_d.set_data(rel_dem0[:, 0], rel_dem0[:, 1])
+    txt_d.set_text(f"t = 0.00 s\npassive: {N_passive}\nframe: particle-centered")
+
+    Up, Vp, Sp = _update_quiver(source_pos, source_vel, 'pinn')
+    quiver_p.set_UVC(Up, Vp, Sp)
+    s_max_p = Sp.max() if Sp.max() > 1e-30 else 1e-6
+    norm_p.vmax = s_max_p
+    src_p.set_data([0.0], [0.0])
+    rel_pinn0 = passive_init - source_pos
+    pas_p.set_data(rel_pinn0[:, 0], rel_pinn0[:, 1])
+    txt_p.set_text(f"t = 0.00 s\npassive: {N_passive}\nframe: particle-centered")
+
+    plt.tight_layout()
+    fig.savefig(STATIC_OUT, dpi=220, facecolor=fig.get_facecolor())
+    print("Saved static: WAKE_binary_test_snapshot.png")
+
+
+export_simulation_json()
+render_static_snapshot()
 anim = FuncAnimation(fig, update, frames=steps, interval=50, blit=False, repeat=True)
-plt.tight_layout()
 plt.show()

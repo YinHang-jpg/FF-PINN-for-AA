@@ -92,12 +92,24 @@ def theoretical_stokes_force_v(vx, particle_radius=1e-6):
     基于 Stokes_drag.py 中的物理公式计算理论斯托克斯阻力（仅x方向，速度相关）：
     只返回速度因子 vx，其他系数在组合时处理
     """
-    # 只返回速度相关的系数：vx
-    return vx
+    # 返回无量纲速度因子，范围约为 [-1, 1]
+    v_max = 0.1
+    return vx / v_max
 
 
 def main():
     import matplotlib.pyplot as plt
+    plt.rcParams.update({
+        "figure.figsize": (7, 4),
+        "figure.dpi": 120,
+        "savefig.dpi": 300,
+        "font.size": 10,
+        "axes.titlesize": 11,
+        "axes.labelsize": 10,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+    })
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("基于 Stokes 解析公式的 PINN 训练（速度相关）…")
@@ -157,12 +169,12 @@ def main():
         epoch += 1
 
     # 可视化
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(7, 4))
     plt.plot(losses)
     plt.yscale('log')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss')
+    plt.title('Stokes Velocity-Dependence PINN Training Loss')
     plt.grid(True)
     plt.show()
     
@@ -188,17 +200,18 @@ def main():
 
         # 绘制 F(v) 理论值 与 模型预测 曲线
         vx_ms = (test_vx * 1000.0).detach().cpu().numpy().flatten()
-        pred_fx = (pred_force * 1e12).detach().cpu().numpy().flatten()
-        true_fx = (true_force * 1e12).detach().cpu().numpy().flatten()
+        pred_fx = pred_force.detach().cpu().numpy().flatten()
+        true_fx = true_force.detach().cpu().numpy().flatten()
         
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=(7, 4))
         plt.plot(vx_ms, true_fx, 'b-', label='Theory', linewidth=2)
         plt.plot(vx_ms, pred_fx, 'r--', label='PINN Prediction', linewidth=1.5)
         plt.xlabel('Velocity vx (mm/s)')
-        plt.ylabel('Stokes Force Fx (pN)')
-        plt.title('Fx(vx) Theory vs PINN')
+        plt.ylabel('Velocity factor vx/v_max (dimensionless)')
+        plt.title('Stokes velocity factor: theory vs PINN')
         plt.grid(True, alpha=0.3)
         plt.legend()
+        plt.ylim(-1.1, 1.1)
         plt.tight_layout()
         plt.show()
 

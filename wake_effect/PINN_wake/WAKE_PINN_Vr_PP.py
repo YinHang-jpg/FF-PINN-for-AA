@@ -5,12 +5,24 @@ import torch.optim as optim
 import json
 import os
 import sys
+from functools import partial
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-Re_FIXED = 1.0
+_DEM_WAKE_DIR = os.path.join(PROJECT_ROOT, "DEM_wake")
+if _DEM_WAKE_DIR not in sys.path:
+    sys.path.insert(0, _DEM_WAKE_DIR)
+from DEM_wake import WAKE_CLOSURE_RE_DEFAULT as Re_FIXED
+
+_PINN_WAKE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PINN_WAKE_DIR not in sys.path:
+    sys.path.insert(0, _PINN_WAKE_DIR)
+from wake_theory_torch import dimless_vr_pp  # noqa: E402
+from wake_pinn_train_config import R_PP_R_MAX, R_PP_R_MIN  # noqa: E402
+
+theoretical_Vr_PP = partial(dimless_vr_pp, Re=Re_FIXED)
 
 
 class Normalizer:
@@ -81,16 +93,6 @@ class WakeNetVrPP(nn.Module):
         return self.layers(x)
 
 
-def theoretical_Vr_PP(R, Theta, Re=Re_FIXED):
-    cos_t = torch.cos(Theta)
-    cos_2t = torch.cos(2 * Theta)
-    R2 = R ** 2
-    R4 = R ** 4
-    term1 = 4 * R * (16 + 3 * Re + 3 * R2 * (-16 + (2 * R - 3) * Re)) * cos_t
-    term2 = 3 * ((R - 1) ** 2) * (1 + R + 2 * R2) * (1 + 3 * cos_2t) * Re
-    return (term1 - term2) / (128 * R4)
-
-
 def main():
     import matplotlib.pyplot as plt
 
@@ -98,7 +100,7 @@ def main():
     print("PINN 训练: Wake PP 径向速度 Vr_PP(R, Theta)")
     print(f"device: {device}, Re = {Re_FIXED}")
 
-    R_min, R_max = 0.5, 5.0
+    R_min, R_max = R_PP_R_MIN, R_PP_R_MAX
     Theta_min, Theta_max = 0.0, 2 * np.pi
 
     N = 30000
@@ -177,12 +179,12 @@ def main():
         pred_2d = pred_val.reshape(n_test, n_test).cpu().numpy()
         true_2d = true_val.reshape(n_test, n_test).cpu().numpy()
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        im0 = axes[0].imshow(true_2d, extent=[0, 360, R_max, R_min], aspect='auto', cmap='RdBu_r')
+        im0 = axes[0].imshow(true_2d, origin='lower', extent=[0, 360, R_min, R_max], aspect='auto', cmap='RdBu_r')
         axes[0].set_title('Theoretical Vr_PP')
         axes[0].set_xlabel('Theta (deg)')
         axes[0].set_ylabel('R')
         plt.colorbar(im0, ax=axes[0])
-        im1 = axes[1].imshow(pred_2d, extent=[0, 360, R_max, R_min], aspect='auto', cmap='RdBu_r')
+        im1 = axes[1].imshow(pred_2d, origin='lower', extent=[0, 360, R_min, R_max], aspect='auto', cmap='RdBu_r')
         axes[1].set_title('PINN Predicted Vr_PP')
         axes[1].set_xlabel('Theta (deg)')
         axes[1].set_ylabel('R')

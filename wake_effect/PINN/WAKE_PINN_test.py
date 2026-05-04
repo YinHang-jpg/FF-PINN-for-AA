@@ -3,12 +3,34 @@ import torch
 import torch.nn as nn
 import json
 import os
+import sys
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.animation import FuncAnimation
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CHAR_LENGTH_M = 5e-4
+_DEM_WAKE_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "DEM_wake")
+if _DEM_WAKE_DIR not in sys.path:
+    sys.path.insert(0, _DEM_WAKE_DIR)
+from DEM_wake import (  # noqa: E402
+    CHAR_LENGTH_M,
+    WAKE_CLOSURE_RE_DEFAULT,
+    _A_P,
+)
+
+STATIC_OUT = os.path.join(SCRIPT_DIR, "WAKE_PINN_test_snapshot.png")
+
+# 权重与 DEM_animation / COMSOL 对比同一套：优先 PINN_wake 训练产出目录，否则用本目录副本
+_PINN_WAKE_WEIGHT_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(SCRIPT_DIR), "PINN_wake", "PINN")
+)
+
+
+def _weight_dir() -> str:
+    pth = os.path.join(_PINN_WAKE_WEIGHT_DIR, "wake_Vr_PP.pth")
+    if os.path.isfile(pth):
+        return _PINN_WAKE_WEIGHT_DIR
+    return SCRIPT_DIR
 
 
 # ============ 网络定义（必须与训练时结构完全一致） ============
@@ -94,11 +116,12 @@ class WakeNetVtOseen(nn.Module):
 # ============ 加载模型 ============
 
 def load_model_and_params(model_class, pth_file, json_file, device):
-    with open(os.path.join(SCRIPT_DIR, json_file), 'r') as f:
+    base = _weight_dir()
+    with open(os.path.join(base, json_file), 'r') as f:
         params = json.load(f)
     model = model_class()
     model.load_state_dict(
-        torch.load(os.path.join(SCRIPT_DIR, pth_file), map_location=device, weights_only=True)
+        torch.load(os.path.join(base, pth_file), map_location=device, weights_only=True)
     )
     model.to(device)
     model.eval()
@@ -116,21 +139,24 @@ model_Vr_Oseen, p_Vr_Oseen = load_model_and_params(
 model_Vt_Oseen, p_Vt_Oseen = load_model_and_params(
     WakeNetVtOseen, 'wake_Vt_Oseen.pth', 'wake_Vt_Oseen_norm.json', device)
 
-print("4 个 PINN 模型全部加载完成。")
+print(f"4 个 PINN 模型已从 {_weight_dir()} 加载完成。")
 
 
 def pinn_predict(model, params, R_tensor, Theta_tensor):
-    R_scaled = (R_tensor - params['R_min']) / (params['R_max'] - params['R_min'])
+    """与 WAKE_PINN_integrated._pred 一致：R 归一化后 clamp 到 [0,1]，避免外推失控。"""
+    R_scaled = (R_tensor - params["R_min"]) / (params["R_max"] - params["R_min"])
+    R_scaled = torch.clamp(R_scaled, 0.0, 1.0)
     with torch.no_grad():
         pred_norm = model(R_scaled, Theta_tensor)
-    return pred_norm * params['force_sigma'] + params['force_mu']
+    return pred_norm * params["force_sigma"] + params["force_mu"]
 
 
 # ============ 批量计算流场（向量化，一次推理所有网格点） ============
 
-def compute_flow_field_pinn(p_pos):
-    x_rel = X.flatten() - p_pos[0]
-    y_rel = Y.flatten() - p_pos[1]
+def compute_flow_field_pinn(p_pos, p_vel):
+    # 粒子参考系下，采样点已是相对粒子中心坐标
+    x_rel = X
+    y_rel = Y
     r = np.hypot(x_rel, y_rel)
 
     valid = r > 1e-12
@@ -146,10 +172,10 @@ def compute_flow_field_pinn(p_pos):
     Vr_Os_t = pinn_predict(model_Vr_Oseen, p_Vr_Oseen, R_t, Theta_t).cpu().numpy().flatten()
     Vt_Os_t = pinn_predict(model_Vt_Oseen, p_Vt_Oseen, R_t, Theta_t).cpu().numpy().flatten()
 
-    # 分段混合（与 DEM_wake.py 完全一致）
-    pp_mask = R_np < 2
-    blend_mask = (R_np >= 2) & (R_np <= 5)
-    oseen_mask = R_np > 5
+    # 分段混合（与 DEM_wake acoustic_wake_velocity：R<=2 → PP；2<R<5 → 混合；R>=5 → Oseen）
+    pp_mask = R_np <= 2
+    blend_mask = (R_np > 2) & (R_np < 5)
+    oseen_mask = R_np >= 5
 
     vr = np.zeros_like(R_np)
     vt = np.zeros_like(R_np)
@@ -164,17 +190,17 @@ def compute_flow_field_pinn(p_pos):
     vr[blend_mask] = ((5 - R_b) * Vr_PP_t[blend_mask] + (R_b - 2) * Vr_Os_t[blend_mask]) / 3
     vt[blend_mask] = ((5 - R_b) * Vt_PP_t[blend_mask] + (R_b - 2) * Vt_Os_t[blend_mask]) / 3
 
-    # 极坐标 → 笛卡尔
+    # 极坐标 → 笛卡尔：v = vr e_r + vt e_θ，Θ = arctan2(y,x)（与 DEM_wake.acoustic_wake_velocity 一致；
+    # 勿对 vx 做半平面 abs 修正）
     cos_th = np.cos(Theta_np)
     sin_th = np.sin(Theta_np)
     U_valid = vr * cos_th - vt * sin_th
     V_valid = vr * sin_th + vt * cos_th
 
-    # 方向调整（与 DEM_wake.py 一致）
-    x_valid = x_rel[valid]
-    U_abs = np.abs(U_valid)
-    upstream = x_valid > 0
-    U_valid = np.where(upstream, -U_abs, -U_abs * 0.5)
+    # DEM_wake：有量纲速度 = 无量纲分量 × WAKE_STRENGTH_MULTIPLIER × |U|
+    source_speed = np.linalg.norm(p_vel)
+    U_valid = U_valid * source_speed
+    V_valid = V_valid * source_speed
 
     # 填回完整网格
     U_flat = np.zeros(r.shape)
@@ -182,22 +208,47 @@ def compute_flow_field_pinn(p_pos):
     U_flat[valid] = np.where(np.isfinite(U_valid), U_valid, 0.0)
     V_flat[valid] = np.where(np.isfinite(V_valid), V_valid, 0.0)
 
-    return U_flat.reshape(X.shape), V_flat.reshape(Y.shape)
+    return U_flat, V_flat
 
 
-# ============ 动画（格式与 DEM_animation.py 完全相同） ============
+# ============ 动画（几何与 DEM_animation.py / DEM_wake 无量纲 R=r/a 一致） ============
 
-Re = 1.0
 dt = 0.02
 steps = 300
 
 particle_pos0 = np.array([0.008, 0.0])
-particle_vel = np.array([-0.001, 0.0])
+particle_vel = np.array([-1.0, 0.0])
+U_REF = float(np.linalg.norm(particle_vel))
+
+def build_polar_ring_points(radius, n_rings, center=(0.0, 0.0)):
+    """分圈采样：半径越大每圈点数越多，并做逐圈角度偏移。"""
+    if n_rings < 2:
+        raise ValueError("n_rings 必须 >= 2")
+    cx, cy = center
+    r_samples = np.linspace(radius / n_rings, radius, n_rings)
+    x_points = [cx]
+    y_points = [cy]
+    golden_angle = np.pi * (3.0 - np.sqrt(5.0))
+    for i, r in enumerate(r_samples, start=1):
+        frac = i / n_rings
+        n_theta = max(8, int(round(n_rings * (0.6 + 1.8 * frac))))
+        theta_offset = (i * golden_angle) % (2.0 * np.pi)
+        theta_ring = np.linspace(0.0, 2.0 * np.pi, n_theta, endpoint=False) + theta_offset
+        x_points.extend((cx + r * np.cos(theta_ring)).tolist())
+        y_points.extend((cy + r * np.sin(theta_ring)).tolist())
+    return np.asarray(x_points), np.asarray(y_points)
+
 
 grid_size = 18
-x_lin = np.linspace(-0.01, 0.01, grid_size)
-y_lin = np.linspace(-0.01, 0.01, grid_size)
-X, Y = np.meshgrid(x_lin, y_lin)
+# 考察半径 [m]：须使 r/a 落在 PINN 训练区间 [~0.5,30] 内；20μm 会导致 R≈0.04 完全外推错误
+DOMAIN_RADIUS = 5e-3
+X, Y = build_polar_ring_points(DOMAIN_RADIUS, grid_size)
+_mask_outside = np.hypot(X, Y) > _A_P
+X = X[_mask_outside]
+Y = Y[_mask_outside]
+DOMAIN_HALF_R = DOMAIN_RADIUS / _A_P
+X_R = X / _A_P
+Y_R = Y / _A_P
 
 fig, ax = plt.subplots(figsize=(7, 7), facecolor="#0d1117")
 ax.set_facecolor("#0d1117")
@@ -207,11 +258,12 @@ V0 = np.zeros_like(Y)
 speed0 = np.zeros_like(X)
 
 cmap = plt.cm.plasma
-norm_color = mcolors.Normalize(vmin=0, vmax=0.05)
-ARROW_SCALE = 5e-4
+norm_color = mcolors.Normalize(vmin=0, vmax=max(U_REF * 1e-6, 1e-9))
+ARROW_SCALE = 1.75e-4
+ARROW_SCALE_R = ARROW_SCALE / _A_P
 
 quiver = ax.quiver(
-    X, Y, U0, V0, speed0,
+    X_R, Y_R, U0, V0, speed0,
     cmap=cmap, norm=norm_color,
     scale=1,
     scale_units='xy',
@@ -224,7 +276,7 @@ quiver = ax.quiver(
 )
 
 cbar = fig.colorbar(quiver, ax=ax, fraction=0.046, pad=0.04)
-cbar.set_label("Flow Speed", color="white", fontsize=11)
+cbar.set_label("Flow Speed (m/s)", color="white", fontsize=11)
 cbar.ax.yaxis.set_tick_params(color="white")
 plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
 
@@ -233,10 +285,17 @@ particle_plot, = ax.plot([], [], 'o',
                           markeredgecolor='white', markeredgewidth=0.8,
                           zorder=5)
 
-ax.set_xlim(-0.01, 0.01)
-ax.set_ylim(-0.01, 0.01)
+ax.set_xlim(-DOMAIN_HALF_R, DOMAIN_HALF_R)
+ax.set_ylim(-DOMAIN_HALF_R, DOMAIN_HALF_R)
 ax.set_aspect('equal')
-ax.set_title("Particle Wake Flow Field (PINN)", color="white", fontsize=13, pad=12)
+ax.set_xlabel(r"$x\,/\,a$", color="white", fontsize=11)
+ax.set_ylabel(r"$y\,/\,a$", color="white", fontsize=11)
+ax.set_title(
+    f"Particle Wake (PINN, Re_closure={WAKE_CLOSURE_RE_DEFAULT:g}, |U|={U_REF:g} m/s)",
+    color="white",
+    fontsize=13,
+    pad=12,
+)
 ax.tick_params(colors='white')
 for spine in ax.spines.values():
     spine.set_edgecolor('#444444')
@@ -248,20 +307,27 @@ time_text = ax.text(0.02, 0.96, '', transform=ax.transAxes,
 def update(frame):
     particle_pos = particle_pos0 + particle_vel * dt * frame
 
-    U, V = compute_flow_field_pinn(particle_pos)
+    U, V = compute_flow_field_pinn(particle_pos, particle_vel)
     speed = np.sqrt(U ** 2 + V ** 2)
 
     eps = 1e-12
-    U_norm = U / (speed + eps) * ARROW_SCALE
-    V_norm = V / (speed + eps) * ARROW_SCALE
+    U_norm = U / (speed + eps) * ARROW_SCALE_R
+    V_norm = V / (speed + eps) * ARROW_SCALE_R
 
     quiver.set_UVC(U_norm, V_norm, speed)
+    s_max = float(np.percentile(speed, 99.0)) if np.any(speed > 0) else max(U_REF * 1e-9, 1e-12)
+    norm_color.vmax = max(s_max, max(U_REF * 1e-9, 1e-12))
 
-    particle_plot.set_data([particle_pos[0]], [particle_pos[1]])
-    time_text.set_text(f"t = {frame * dt:.2f} s")
+    particle_plot.set_data([0.0], [0.0])
+    time_text.set_text(f"t = {frame * dt:.2f} s\nframe: particle-centered")
 
     return quiver, particle_plot, time_text
 
+
+update(0)
+plt.tight_layout()
+fig.savefig(STATIC_OUT, dpi=220, facecolor=fig.get_facecolor())
+print("Saved static: WAKE_PINN_test_snapshot.png")
 
 anim = FuncAnimation(
     fig,
@@ -272,5 +338,4 @@ anim = FuncAnimation(
     repeat=True
 )
 
-plt.tight_layout()
 plt.show()

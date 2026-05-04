@@ -57,13 +57,13 @@ def plot_simtime(sim_time, pinn, dem, comsol):
     comsol_c, comsol_xl, comsol_yl = linear_fit(sim_time, comsol)
 
     plot_series_linear(ax, sim_time, pinn, pinn_c, pinn_xl, pinn_yl,
-                       "red", "o", 40, "-", "PINN")
+                       "red", "o", 40, "-", "FF-PINN")
     plot_series_linear(ax, sim_time, dem, dem_c, dem_xl, dem_yl,
                        "green", "^", 50, "-", "DEM")
     plot_series_linear(ax, sim_time, comsol, comsol_c, comsol_xl, comsol_yl,
-                       "blue", "s", 40, "--", "COMSOL")
+                       "blue", "s", 40, "--", "FEM")
 
-    ax.set_title("Computation Time vs Simulation Time",
+    ax.set_title("(a)",
                  fontsize=14, fontweight="bold")
     ax.set_xlabel("Simulation Time (s)", fontsize=12)
     ax.set_ylabel("Computation Time (s)", fontsize=12)
@@ -112,19 +112,19 @@ def plot_particle(dem_x, dem_y, pinn_x, pinn_y, comsol_x, comsol_y):
     dem_c, dem_xl, dem_yl = linear_fit(dem_x, dem_y)
 
     plot_series_linear(ax, pinn_x, pinn_y, pinn_c, pinn_xl, pinn_yl,
-                       "red", "o", 40, "-", "PINN")
+                       "red", "o", 40, "-", "FF-PINN")
     plot_series_linear(ax, dem_x, dem_y, dem_c, dem_xl, dem_yl,
                        "green", "^", 50, "-", "DEM")
     if len(comsol_x) >= 3:
         comsol_c, comsol_xl, comsol_yl = linear_fit(comsol_x, comsol_y)
         plot_series_linear(ax, comsol_x, comsol_y, comsol_c,
                            comsol_xl, comsol_yl,
-                           "blue", "s", 40, "--", "COMSOL")
+                           "blue", "s", 40, "--", "FEM")
     elif len(comsol_x) > 0:
         ax.scatter(comsol_x, comsol_y, color="blue", marker="s",
-                   s=60, zorder=5, label="COMSOL")
+                   s=60, zorder=5, label="FEM")
 
-    ax.set_title("Computation Time vs Particle Count",
+    ax.set_title("(b)",
                  fontsize=14, fontweight="bold")
     ax.set_xlabel("Particle Count", fontsize=12)
     ax.set_ylabel("Computation Time (s)", fontsize=12)
