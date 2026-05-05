@@ -1,59 +1,37 @@
-# 粒子运动模拟模型 - 核心脚本版本
+# `other_files/` — primary simulation drivers and utilities
 
-这是一个干净的粒子运动模拟模型代码库，只包含核心的Python脚本文件，移除了所有大型数据文件、缓存文件和测试文件。
+This folder hosts **main-entry** style scripts and small tools. The historical root-level `main.py` described in older notes is **not** the current layout; use the paths below.
 
-## 文件结构
+## Main entry scripts
 
-```
-├── main.py                          # 主仿真程序
-├── requirements.txt                  # Python依赖包列表
-├── .gitignore                       # Git忽略文件配置
-├── mechanisms/                      # 物理机制模块
-│   ├── ARF.py                      # 声辐射力计算
-│   ├── Brownian.py                 # 布朗运动
-│   ├── Stokes_drag.py              # 斯托克斯阻力
-│   ├── agglomeration.py            # 粒子团聚
-│   ├── collision.py                # 碰撞处理
-│   ├── gravity.py                  # 重力
-│   └── wake.py                     # 尾流场
-└── initialization/                  # 初始化模块
-    ├── particle_initialization.py   # 粒子初始化
-    ├── sound_source_standing.py    # 驻波声源
-    ├── sound_source_traveling.py   # 行波声源
-    └── test_particle.py            # 测试粒子
-```
+| Script | Purpose |
+|--------|---------|
+| `PINN_main.py` | Time marching with **five trained sub-PINNs** (ARF x/t + Stokes x/t/v); no live animation. |
+| `PINN_main_integrated.py` | Uses **`PhysicalUnifiedModel`** (`UNIFIED_PINN`) with weights under `PINN/`. |
+| `clustering.py` | Same force stack as integrated path plus **1D x-merge** collision coalescence and diagnostics. |
+| `DEM_main.py` | Discrete-element style baseline importing `mechanisms.ARF.compute_pressure_gradient_and_apply_arf`. |
+| `PINN_preview.py` | Lightweight preview of forces on a particle layout. |
 
-## 主要功能
+**Encoding:** several scripts call `sys.stdout.reconfigure(encoding="utf-8")` (or equivalent) on Windows so log text stays readable.
 
-- **粒子运动仿真**：模拟500个粒子在声场中的运动
-- **声辐射力**：计算并应用声辐射力到粒子上
-- **多种物理机制**：支持重力、阻力、碰撞、团聚等
-- **实时可视化**：动态显示粒子运动和密度分布
-- **性能监控**：实时监控CPU、内存使用和帧率
+## Dependencies
 
-## 安装和运行
+See `other_files/requirements.txt` for a **minimal** list. Training and inference also need **PyTorch**, **SciPy**, and typically **tqdm** — install separately for your CUDA/CPU stack.
 
-1. 安装依赖：
-```bash
-pip install -r requirements.txt
+## Project root / `PYTHONPATH`
+
+Run these scripts with the **repository root** as the working directory (parent of `mechanisms/`), or export:
+
+```text
+set PYTHONPATH=<path-to-repo-root>
 ```
 
-2. 运行仿真：
-```bash
-python main.py
-```
+so `import mechanisms` and `import initialization` succeed.
 
-## 配置选项
+## Models
 
-在 `main.py` 中可以调整以下开关：
-- `USE_ARF`: 是否启用声辐射力
-- `USE_GRAVITY`: 是否启用重力
-- `USE_STOKES_DRAG`: 是否启用斯托克斯阻力
-- `USE_COLLISION`: 是否启用碰撞处理
-- `USE_ACOUSTIC_WAKE`: 是否启用尾流场影响
+Trained weights are expected under `PINN/` at the repo root, often in subfolders such as `PINN/freq_8k/`. Some drivers honor `PINN_FREQ_FOLDER` to pick a frequency-specific set.
 
-## 注意事项
+## Full reviewer map
 
-- 此版本移除了所有大型PDF文件、数据文件和缓存文件
-- 保留了核心的仿真逻辑和物理计算
-- 适合代码审查、版本控制和部署
+See `docs/REVIEWER_CODE_MAP.md` at the repository root.

@@ -18,12 +18,9 @@ def acoustic_wake_velocity(source_pos, target_pos, source_vel, Re, return_cartes
     if r < 1e-12:
         return (0.0, 0.0)
 
-    # Dimensionless radius to match test_wake.py thresholds
     R = r / CHAR_LENGTH_M
 
-    # 关键：使用与test_wake.py完全相同的角度定义
-    # test_wake.py使用theta_range=(0, np.pi)，即上半平面
-    # 但我们需要处理整个平面，所以使用带符号的角度
+    # Polar angle (full plane); must match test_wake.py conventions for benchmarks
     Theta = np.arctan2(y, x)
 
     cos_t = np.cos(Theta)
@@ -63,20 +60,14 @@ def acoustic_wake_velocity(source_pos, target_pos, source_vel, Re, return_cartes
     if not return_cartesian:
         return (vr, vt)
 
-    # Convert to Cartesian using test_wake.py formula
     U = vr * np.cos(Theta) - vt * np.sin(Theta)
     V = vr * np.sin(Theta) + vt * np.cos(Theta)
 
-    # 关键：考虑粒子向左运动的影响
-    # 当粒子向左运动时，尾流场应该反映这种运动
-    # 在粒子前方（上游），流体应该向左流动
-    # 在粒子后方（下游），流体应该向左流动，但速度较小
-    
-    # 根据位置调整速度方向
-    if x > 0:  # 粒子前方（上游）
-        U = -abs(U)  # 强制向左
-    else:  # 粒子后方（下游）
-        U = -abs(U) * 0.5  # 向左但速度较小
+    # Heuristic upstream/downstream bias for left-moving source (see test_wake.py)
+    if x > 0:
+        U = -abs(U)
+    else:
+        U = -abs(U) * 0.5
 
     # Return global coordinates directly
     vx_global, vy_global = U, V

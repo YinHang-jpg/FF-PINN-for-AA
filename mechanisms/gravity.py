@@ -1,17 +1,18 @@
 import numpy as np
 
+
 def apply_gravity(positions, velocities, mass, dt, g=9.81):
     """
-    对粒子施加重力，使其匀加速下落。
-    :param positions: (N,2) 粒子位置
-    :param velocities: (N,2) 粒子速度
-    :param mass: (N,) 粒子质量
-    :param dt: 时间步长
-    :param g: 重力加速度，单位 m/s^2
-    :return: 更新后的 positions, velocities
+    Apply uniform gravity (free fall in -y).
+
+    :param positions: (N, 2) positions
+    :param velocities: (N, 2) velocities
+    :param mass: (N,) mass (unused for g, kept for API symmetry)
+    :param dt: time step [s]
+    :param g: gravitational acceleration [m/s^2]
+    :return: updated positions, velocities
     """
     velocities = velocities.copy()
-    # F = m * g, a = F / m = g
-    velocities[:, 1] -= g * dt  # 只在y方向
+    velocities[:, 1] -= g * dt
     positions = positions + velocities * dt
     return positions, velocities
