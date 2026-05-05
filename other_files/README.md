@@ -2,6 +2,8 @@
 
 This folder hosts **main-entry** style scripts and small tools. The historical root-level `main.py` described in older notes is **not** the current layout; use the paths below.
 
+**How this connects to the paper bundle:** runtime **mechanisms** live in `mechanisms/`, shared **parameters** in `initialization/`, trained **weights** in `PINN/`, and most publication-style **outputs** in `results/`. These scripts wire those folders together from the repo root.
+
 ## Main entry scripts
 
 | Script | Purpose |

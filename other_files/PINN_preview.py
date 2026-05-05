@@ -4,11 +4,11 @@ import torch.nn as nn
 import json
 import os
 
-# 导入初始化函数
+# Import particle / sound initialization
 from initialization.particle_initialization import initialize_particles
 from initialization.sound_source_standing import frequency, sound_pressure_level
 
-# 导入各个PINN模型
+# Import unified PINN stack
 from mechanisms.ARF_PINN_x import ARFNet as ARFNetX, Normalizer as ARFNormalizerX
 from mechanisms.ARF_PINN_t import ARFNetT, Normalizer as ARFNormalizerT
 from mechanisms.STOKES_PINN_x import StokesNetX, Normalizer as StokesNormalizerX

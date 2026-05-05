@@ -13,14 +13,14 @@ import torch
 import json
 import sys
 
-# 修复Windows中文编码问题
+# Fix Windows console UTF-8
 if sys.platform.startswith('win'):
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
 
 
-# 修复Windows中文编码问题
+# Fix Windows console UTF-8
 if sys.platform.startswith('win'):
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())

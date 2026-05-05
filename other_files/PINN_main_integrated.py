@@ -1,14 +1,14 @@
-# 修复Windows中文编码问题（只执行一次）
+# Fix Windows console UTF-8（只执行一次）
 import sys
 if sys.platform.startswith('win'):
     import codecs
-    # 检查是否已经设置过，避免重复设置导致错误
+    # Avoid double-wrapping stdout/stderr
     if hasattr(sys.stdout, 'detach'):
         try:
             sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
             sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
         except (AttributeError, OSError):
-            # 如果已经设置过或无法设置，忽略错误
+            # Ignore if already wrapped
             pass
 
 import numpy as np
@@ -20,11 +20,11 @@ import pandas as pd
 from scipy.signal import savgol_filter
 from scipy.interpolate import UnivariateSpline
 
-# 导入初始化函数
+# Import particle / sound initialization
 from initialization.particle_initialization import initialize_particles
 from initialization.sound_source_standing import frequency as _frequency
 
-# 导入PINN模型
+# Import unified PINN stack
 from mechanisms.UNIFIED_PINN import (
     load_individual_models,
     UnifiedNormalizer,
@@ -211,7 +211,7 @@ def run_single_simulation(total_steps, suppress_output=True, save_positions=Fals
         tuple: (x_grid, relative_change) for subsequent analysis
                If save_positions=True, also returns position_data dict
     """
-    # 使用固定的 PINN 目录
+    # Active checkpoints live under PINN/
     model_base_path = 'PINN'
     
     if not suppress_output:

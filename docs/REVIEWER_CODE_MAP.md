@@ -1,5 +1,16 @@
 # Reviewer code map (FF-PINN)
 
+## Repository layout (four pillars)
+
+| Folder | Contents |
+|--------|----------|
+| **`mechanisms/`** | ARF and Stokes **physics + PINN** definitions, `UNIFIED_PINN.py` runtime, training scripts for the five sub-networks. |
+| **`initialization/`** | Particle layouts, standing-wave parameters (`sound_source_standing.py`), shared **inputs** to mechanisms and drivers. |
+| **`PINN/`** | Trained **`.pth` + normalization JSON**; often organized as `PINN/freq_8k/`, `freq_12k/`, `freq_16k/`, etc. |
+| **`results/`** | **Outputs**: kernel extraction, parameter sweeps, animations, convergence studies, efficiency tables. |
+
+Scripts under `other_files/`, `scripts/`, and `validation/` orchestrate these directories.
+
 Paper section numbering should be checked against your final Word/PDF; subsection titles below follow the usual structure for this project.
 
 ---
@@ -51,10 +62,10 @@ Paper section numbering should be checked against your final Word/PDF; subsectio
 
 ---
 
-## Parametric SPL / frequency / density (wide parameter study)
+## Acoustic knobs (SPL, frequency, domain)
 
-**Code:** `PINN_wide/f_SPL_dens_var.py`  
-**Acoustic knobs:** `initialization/sound_source_standing.py` (SPL, frequency, domain)
+**Code / config:** `initialization/sound_source_standing.py` (SPL, frequency, domain).  
+Sweep drivers that edit these in place for batch studies live under `results/parameter_sweep/` and `results/density_sweep/`.
 
 ---
 
@@ -69,9 +80,15 @@ Paper section numbering should be checked against your final Word/PDF; subsectio
 
 **Code:** `results/kernel/kernel_extractor.py`
 
-**Companion note:** `docs/PAPER_CODE_CONSISTENCY.md` (formulas, frequency list, `diameter_pair_enhancement` vs. prose “wake” wording).
+**Companion note:** `docs/PAPER_CODE_CONSISTENCY.md` (formulas, frequency list, `DIAMETER_ENH_*` vs. prose “wake” wording).
 
 **Output artifacts:** heat maps, kernel–time curves, `.npz` archives under `results/kernel/`.
+
+---
+
+## Timestep convergence (side study)
+
+**Code:** `results/convergence_check/convergence_check.py` — compares Gaussian-KDE density-change curves for several `dt` choices using `PhysicalUnifiedModel`.
 
 ---
 

@@ -32,11 +32,11 @@ class SpatialWrapper(nn.Module):
         self.mlp = mlp
         wavelength = c_0 / frequency
         self.register_buffer('k', torch.tensor(2 * np.pi / wavelength, dtype=torch.float32))
-        # 生成与训练一致的输入维度：2*fourier_features
+        # Input dim aligned with training: 2*fourier_features
         self.register_buffer('fourier_weights', torch.randn(1, int(fourier_features), dtype=torch.float32))
 
     def forward(self, x_meters):
-        # 广播生成 [N, F] 的相位
+        # Broadcast phases to shape [N, F]
         phase = self.k * x_meters @ torch.ones((1, self.fourier_weights.shape[1]), device=x_meters.device) * self.fourier_weights
         feats = torch.cat([torch.sin(phase), torch.cos(phase)], dim=1)
         return self.mlp(feats)
@@ -72,7 +72,7 @@ def _infer_layer_dims_from_state(state_dict):
 
 
 def load_x_model_and_norms():
-    # 强制使用 PINN/ 下的训练模型类
+    # Prefer checkpoint NN class from PINN/
     from mechanisms.ARF_PINN_x import ARFNet as TrainedARFNetX
     state = torch.load('PINN/arf_model_x.pth', map_location='cpu')
     if isinstance(state, dict) and 'model_state_dict' in state:
@@ -84,7 +84,7 @@ def load_x_model_and_norms():
     model.load_state_dict(state, strict=True)
     model.eval()
 
-    # 尝试读取归一化参数；若不存在则用理论范围与理论力估算
+    # Load normalization if present; else infer range from theory
     try:
         with open('PINN/arf_model_x_normalization_params.json', 'r') as f:
             norms = json.load(f)
@@ -94,7 +94,7 @@ def load_x_model_and_norms():
         x_min_m = -1.5 * half_period
         x_max_m =  1.5 * half_period
         xs = np.linspace(x_min_m, x_max_m, 2000, dtype=np.float32)
-        # 理论力用于估算 mu/sigma
+        # Theoretical force shapes mu/sigma fallback
         k = 2 * np.pi / wavelength
         d_p = 2.0 * 1e-6
         offset = np.sqrt(2.0) * d_p / 4.0
@@ -119,7 +119,7 @@ def load_t_model_and_norms():
     elif isinstance(state, dict) and 'state_dict' in state:
         state = state['state_dict']
 
-    # 尝试读取归一化参数；若不存在则用一个周期的 cos 估算
+    # Time normalization: read JSON if present, else one-period cos heuristic
     try:
         with open('PINN/arf_model_t_normalization_params.json', 'r') as f:
             norms = json.load(f)

@@ -87,7 +87,7 @@ def load_model_and_norms():
             norms = json.load(f)
 
     model = None
-    # 优先尝试使用训练时的模型类，严格匹配权重
+    # Prefer the trained class for strict weight compatibility
     if TrainedARFNetT is not None:
         try:
             model = TrainedARFNetT(period_seconds=1.0 / frequency)
@@ -105,7 +105,7 @@ def load_model_and_norms():
 def main():
     model, norms = load_model_and_norms()
 
-    # 使用训练保存的归一化区间，确保绘图范围与训练/评估一致
+    # Use saved normalization bounds so plot ranges match training/validation
     t_min_s = float(norms['t_min'])
     t_max_s = float(norms['t_max'])
     t_range_us = np.linspace(t_min_s * 1e6, t_max_s * 1e6, 1000)

@@ -4,21 +4,21 @@ import torch.nn as nn
 import json
 import matplotlib.pyplot as plt
 
-# 导入物理常数
+# Physical constants
 try:
     from mechanisms.Stokes_drag import compute_air_velocity_due_to_sound
 except Exception:
     pass
 
-# 物理参数
+# Physical parameters
 frequency = 10000  # Hz
 sound_speed = 340  # m/s
 
 
 def load_stokes_models_and_norms():
-    """加载斯托克斯力的三个子模型及其归一化参数"""
+    """Load the three Stokes factor nets + normalization JSON."""
     
-    # 加载位置相关模型 F(x)
+    # Spatial factor F(x)
     from mechanisms.STOKES_PINN_x import StokesNetX
     state_x = torch.load('PINN/stokes_model_x.pth', map_location='cpu')
     model_x = StokesNetX(fourier_features=32)
@@ -28,7 +28,7 @@ def load_stokes_models_and_norms():
     with open('PINN/stokes_model_x_normalization_params.json', 'r') as f:
         norms_x = json.load(f)
     
-    # 加载速度相关模型 F(v)
+    # Velocity factor F(v)
     from mechanisms.STOKES_PINN_v import StokesNetV
     state_v = torch.load('PINN/stokes_model_v.pth', map_location='cpu')
     model_v = StokesNetV()
@@ -38,7 +38,7 @@ def load_stokes_models_and_norms():
     with open('PINN/stokes_model_v_normalization_params.json', 'r') as f:
         norms_v = json.load(f)
     
-    # 加载时间相关模型 F(t)
+    # Temporal factor F(t)
     from mechanisms.STOKES_PINN_t import StokesNetT
     state_t = torch.load('PINN/stokes_model_t.pth', map_location='cpu')
     period_s = 1.0 / frequency
@@ -57,11 +57,11 @@ def load_stokes_models_and_norms():
 
 
 def predict_stokes_factor(model, norms, values, key_prefix):
-    """通用预测函数，用于预测任意因子"""
+    """Predict one normalized Stokes branch output."""
     with torch.no_grad():
         tensor = torch.tensor(values, dtype=torch.float32).unsqueeze(1)
         
-        # 归一化输入
+        # Normalize inputs per JSON
         if 'x' in key_prefix:
             val_min = norms['x_min']
             val_max = norms['x_max']
@@ -75,7 +75,7 @@ def predict_stokes_factor(model, norms, values, key_prefix):
         scaled = (tensor - val_min) / (val_max - val_min)
         pred_norm = model(scaled)
         
-        # 反归一化输出
+        # Denormalize network output
         force = pred_norm * float(norms['force_sigma']) + float(norms['force_mu'])
         return force.squeeze(1).cpu().numpy().astype(np.float32)
 

@@ -86,7 +86,7 @@ def load_model_and_norms():
 
     dims = _infer_layer_dims_from_state(state) or [2, 256, 256, 128, 64, 1]
     model = None
-    # 优先严格按训练类加载；失败再回退包装器
+    # Prefer the trained class for strict weight compatibility; else fallback wrapper
     if TrainedARFNetX is not None:
         try:
             model = TrainedARFNetX(fourier_features=32)
@@ -137,7 +137,7 @@ def load_model_and_norms():
 def main():
     model, norms = load_model_and_norms()
 
-    # 使用训练保存的归一化区间绘图，保证一致
+    # Use saved normalization bounds so plots match training/validation ranges
     x_min_mm = float(norms['x_min']) * 1000.0
     x_max_mm = float(norms['x_max']) * 1000.0
     x_range_mm = np.linspace(x_min_mm, x_max_mm, 1000)

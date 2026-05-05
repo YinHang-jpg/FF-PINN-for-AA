@@ -2,6 +2,17 @@
 
 This repository contains PINN models (SPGF / Stokes branches), particle time-stepping drivers, DEM baselines, COMSOL validation utilities, and post-processing for orthokinetic collision kernels referenced in the accompanying manuscript.
 
+## How the manuscript maps to folders (for reviewers)
+
+| What you are looking for | Where it lives |
+|--------------------------|----------------|
+| **Mechanisms** (ARF, Stokes, unified runtime wrapper, training scripts for the five sub-networks) | `mechanisms/` |
+| **Simulation parameters** (particle placement, standing-wave / SPL settings shared with training) | `initialization/` |
+| **Trained models** (checkpoints and normalization JSON; frequency packs under `PINN/freq_*k/`) | `PINN/` |
+| **Paper figures, sweeps, kernel extraction, convergence checks** | `results/` |
+
+Entry drivers (e.g. `other_files/PINN_main_integrated.py`, `other_files/clustering.py`) import from `mechanisms/` and `initialization/`, load weights from `PINN/`, and write diagnostics or plots under `results/` or the working directory.
+
 ## Paper overview (for reviewers)
 
 A **standalone HTML page** summarizes the manuscript’s main points, key results, and how to navigate this repository. Open it in any modern web browser (no web server needed for local viewing).
@@ -32,15 +43,14 @@ Add the **repository root** to `PYTHONPATH` (or run scripts with the project roo
 | SPGF / Stokes training scripts | `mechanisms/ARF_PINN_*.py`, `mechanisms/STOKES_PINN_*.py` |
 | Runtime unified normalizer + loader | `mechanisms/UNIFIED_PINN.py` |
 | COMSOL / density validation | `validation/comsol_visualizer.py`, `validation/comsol_dualplot.py` |
-| Parametric SPL / frequency wide model | `PINN_wide/f_SPL_dens_var.py` |
 | Orthokinetic kernel post-processing (Fig. 12–style) | `results/kernel/kernel_extractor.py` |
+| Timestep convergence (density metric) | `results/convergence_check/convergence_check.py` |
 | Frequency / density parameter sweeps | `results/parameter_sweep/freq_sweep.py`, `results/density_sweep/density_distribution_plot.py` |
 
 ## Reviewer documentation
 
 - **`docs/REVIEWER_CODE_MAP.md`** — Narrative order: manuscript sections → code paths → data/weights.
-- **`docs/PAPER_CODE_CONSISTENCY.md`** — Known alignments and residual naming notes (e.g. kernel script vs. text).
-
+- **`docs/PAPER_CODE_CONSISTENCY.md`** — Kernel script vs. manuscript symbols; frequency list; diameter enhancement vs. optional wake codebase.
 
 ## License / attribution
 
