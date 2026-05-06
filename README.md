@@ -14,6 +14,10 @@ python review/examples/run_example.py
 
 The example wraps `results/PD_vs_time/PD_time.py` to integrate the PINN model for **0.01 s of physical time** and produces a single-time-point PINN / DEM / FEM density-comparison figure at `review/examples/density_comparison_t0.01s.png` (a `t = 0.01 s` slice of `results/PD_vs_time/comparison/density_comparison_group1.png`). Expected output is documented in [`review/examples/expected_output.txt`](review/examples/expected_output.txt).
 
+If **`PINN/` does not yet contain all five sub-network checkpoints** (`.pth` plus normalization JSON files), `run_example.py` will **automatically run** the training scripts under `mechanisms/` (`ARF_PINN_x.py`, `ARF_PINN_t.py`, `STOKES_PINN_x.py`, `STOKES_PINN_t.py`, `STOKES_PINN_v.py`) from the repository root before the simulation. That training pass can take substantial wall time on CPU; use `python review/examples/run_example.py --skip-train` if you prefer to fail fast when weights are missing.
+
+For a high-level narrative of the paper and repository navigation, open **[`front_page/front_page.html`](front_page/front_page.html)** in a browser after cloning (double-click the file locally, or follow the link from your Git host and use **Raw / Download** if HTML is not rendered inline).
+
 For a complete, step-by-step reproduction of the manuscript figures, follow [`review/REPRODUCIBILITY.md`](review/REPRODUCIBILITY.md).
 
 ## Reviewer / supplementary material — `review/`
@@ -28,6 +32,7 @@ The folder [`review/`](review/) bundles the documents requested by the journal u
 | [`review/REPRODUCIBILITY.md`](review/REPRODUCIBILITY.md) | Step-by-step instructions to reproduce every manuscript figure. |
 | [`review/CHANGELOG.md`](review/CHANGELOG.md)           | Version history (`v1.0.0` = manuscript-submission release). |
 | [`review/examples/`](review/examples/)                 | Minimal runnable example (`run_example.py`) with input config and expected output. |
+| [`front_page/front_page.html`](front_page/front_page.html) | Standalone overview page (figures + manuscript/repo pointers); open locally in any browser. |
 
 ## How the manuscript maps to folders (for reviewers)
 
@@ -42,11 +47,9 @@ Entry drivers (e.g. `other_files/PINN_main_integrated.py`, `other_files/clusteri
 
 ## Paper overview (for reviewers)
 
-A **standalone HTML page** summarizes the manuscript’s main points, key results, and how to navigate this repository. Open it in any modern web browser (no web server needed for local viewing).
+A **standalone HTML page** at [`front_page/front_page.html`](front_page/front_page.html) summarizes the manuscript’s main points, key results, and how to navigate this repository. After cloning, open that path in Explorer / Finder and launch it in any modern browser (no web server required).
 
-**[Paper overview (HTML)](front_page/front_page.html)**
-
-When you view this README on a Git hosting site (e.g. GitHub or GitLab), the link above resolves to the normal project URL for that file; use your browser’s **Open / Download / Raw** control if the site does not render HTML inline. This is **not** a `file://` path and does not assume a particular folder on your computer.
+When you view this README on a Git hosting site (e.g. GitHub or GitLab), the link resolves to the normal project URL for that file; use **Raw**, **Download**, or **Open** if the site does not render HTML inline.
 
 ## Python environment
 

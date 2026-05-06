@@ -32,6 +32,18 @@ It can also be invoked directly from this folder::
 
     cd review/examples
     python run_example.py
+
+If the configured PINN checkpoint directory (default: repository ``PINN/``)
+does not yet contain **all** factorized weights and JSON normalizers
+expected by ``mechanisms/UNIFIED_PINN.py``, this script **runs the five
+training modules** in order (``ARF_PINN_x``, ``ARF_PINN_t``, ``STOKES_PINN_x``,
+``STOKES_PINN_t``, ``STOKES_PINN_v``) from the repository root before the
+demo simulation. That step can take a long time; pass ``--skip-train`` to
+fail immediately when checkpoints are missing instead.
+
+Non-default ``pinn_model_base_path`` entries (e.g. ``PINN/freq_10k``) are
+**not** populated automatically—the bundled trainers always write under
+``PINN/`` at the repo root.
 """
 
 from __future__ import annotations
@@ -40,6 +52,7 @@ import argparse
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -64,6 +77,105 @@ if str(REPO_ROOT) not in sys.path:
 
 
 DEFAULT_CONFIG_PATH = HERE / "demo_input.json"
+
+# Files required for PD_time / UNIFIED_PINN.load_individual_models (default PINN/).
+PINN_ARTIFACT_FILENAMES = (
+    "arf_model_x.pth",
+    "arf_model_x_normalization_params.json",
+    "arf_model_t.pth",
+    "arf_model_t_normalization_params.json",
+    "stokes_model_x.pth",
+    "stokes_model_x_normalization_params.json",
+    "stokes_model_t.pth",
+    "stokes_model_t_normalization_params.json",
+    "stokes_model_v.pth",
+    "stokes_model_v_normalization_params.json",
+)
+
+TRAINING_SCRIPTS = (
+    "mechanisms/ARF_PINN_x.py",
+    "mechanisms/ARF_PINN_t.py",
+    "mechanisms/STOKES_PINN_x.py",
+    "mechanisms/STOKES_PINN_t.py",
+    "mechanisms/STOKES_PINN_v.py",
+)
+
+
+def resolve_pinn_model_dir(model_base_path: str | None) -> Path:
+    """Absolute directory holding the five sub-network checkpoints."""
+    if model_base_path is None:
+        return (REPO_ROOT / "PINN").resolve()
+    norm = str(model_base_path).strip().replace("\\", "/")
+    if not norm or norm in ("PINN", "./PINN"):
+        return (REPO_ROOT / "PINN").resolve()
+    return (REPO_ROOT / model_base_path).resolve()
+
+
+def pinn_pack_complete(model_dir: Path) -> bool:
+    return all((model_dir / name).is_file() for name in PINN_ARTIFACT_FILENAMES)
+
+
+def train_default_pinn_pack(*, skip_train: bool) -> None:
+    """Ensure ``REPO_ROOT/PINN`` contains all checkpoints; train if missing."""
+    model_dir = (REPO_ROOT / "PINN").resolve()
+    if pinn_pack_complete(model_dir):
+        return
+    if skip_train:
+        missing = [n for n in PINN_ARTIFACT_FILENAMES if not (model_dir / n).is_file()]
+        raise FileNotFoundError(
+            f"PINN checkpoints incomplete under {model_dir}. "
+            f"Missing: {missing[:5]}{'...' if len(missing) > 5 else ''}. "
+            f"Remove --skip-train to run the bundled training scripts, or copy "
+            f"a complete weight pack into PINN/."
+        )
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    print("\n" + "=" * 72)
+    print("[train] No complete PINN pack found; running factorized training scripts.")
+    print("[train] This may take a long time (especially on CPU). Please wait…")
+    print("=" * 72 + "\n")
+
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+
+    for rel in TRAINING_SCRIPTS:
+        script_path = (REPO_ROOT / rel).resolve()
+        if not script_path.is_file():
+            raise FileNotFoundError(f"Training script not found: {script_path}")
+        print(f"[train] >>> {sys.executable} {script_path.relative_to(REPO_ROOT)}")
+        subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            check=True,
+        )
+
+    if not pinn_pack_complete(model_dir):
+        raise RuntimeError(
+            f"Training finished but PINN artifacts are still incomplete under {model_dir}."
+        )
+    print("\n[train] All PINN checkpoints present; continuing with the example.\n")
+
+
+def ensure_pinn_ready_for_config(model_base_path: str | None, *, skip_train: bool) -> None:
+    """Train default ``PINN/`` when needed; validate custom paths."""
+    target = resolve_pinn_model_dir(model_base_path)
+    default_root = (REPO_ROOT / "PINN").resolve()
+
+    if pinn_pack_complete(target):
+        return
+
+    if target.resolve() == default_root:
+        train_default_pinn_pack(skip_train=skip_train)
+        return
+
+    missing = [n for n in PINN_ARTIFACT_FILENAMES if not (target / n).is_file()]
+    raise FileNotFoundError(
+        f"PINN checkpoints incomplete under {target}. Missing (sample): "
+        f"{missing[:5]}{'...' if len(missing) > 5 else ''}. "
+        f"The bundled trainers only write to {default_root}; copy weights into "
+        f"'{target.relative_to(REPO_ROOT)}' or set pinn_model_base_path to null."
+    )
 
 
 def load_config(path: Path) -> dict:
@@ -373,9 +485,16 @@ def main():
     parser.add_argument("--plot", action="store_true",
                         help="Show the matplotlib figure interactively in "
                              "addition to writing the PNG file.")
+    parser.add_argument("--skip-train", action="store_true",
+                        help="Do not run bundled training scripts when PINN/ "
+                             "is incomplete; exit with an error instead.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    ensure_pinn_ready_for_config(
+        cfg.get("pinn_model_base_path"),
+        skip_train=args.skip_train,
+    )
 
     print("=" * 72)
     print("FF-PINN review/examples/run_example.py")
