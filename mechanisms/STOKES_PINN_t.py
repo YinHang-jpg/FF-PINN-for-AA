@@ -102,16 +102,15 @@ class StokesNetT(nn.Module):
 
 def theoretical_stokes_force_t(t, particle_radius=1e-6):
     """
-    Reference temporal factor cos(2*pi*f*t):
-    Returns cos(2*pi*f*t); consistent global phase in composition
+    Real physical time factor of the acoustic forcing: cos(2*pi*f*t).
+    This is the actual carrier-time modulation (dimensionless, in [-1, 1] by
+    nature of cos). It is composed downstream as
+        F_drag = -drag_coeff * (vx - stokes_amp * cos(omega t) * cos(k x))
+    where drag_coeff and stokes_amp carry all the SI units, so this branch
+    must NOT be rescaled to a different numeric range.
     """
-    # Angular frequency
     omega = 2 * np.pi * frequency
-    
-    # Temporal factor cos(2*pi*f*t)
-    time_factor = torch.cos(omega * t)
-    
-    return time_factor  # dimensionless in [-1, 1]
+    return torch.cos(omega * t)
 
 
 def main():
@@ -218,18 +217,21 @@ def main():
         print(f"\n=== Test metrics ===")
         print(f"Mean rel. error: {mean_error*100:.2f}%")
         print(f"Max rel. error: {max_error*100:.2f}%")
+        print(f"Peak |cos(omega t)| (theory): {true_force.abs().max().item():.3e}")
 
-        # Plot analytic vs model along t
+        # Display only: scale by peak |cos| so the curve stays in [-1, 1] on the figure.
+        # Training/inverse above use the physical dimensionless cos; JSON stores z-score stats.
+        y_scale = float(true_force.abs().max().item()) + 1e-30
         tt = (test_t * 1e6).detach().cpu().numpy().flatten()
-        pred_fx = pred_force.detach().cpu().numpy().flatten()
-        true_fx = true_force.detach().cpu().numpy().flatten()
-        
+        pred_pn = (pred_force / y_scale).detach().cpu().numpy().flatten()
+        true_pn = (true_force / y_scale).detach().cpu().numpy().flatten()
+
         plt.figure(figsize=(7, 4))
-        plt.plot(tt, true_fx, 'b-', label='Theory', linewidth=2)
-        plt.plot(tt, pred_fx, 'r--', label='PINN Prediction', linewidth=1.5)
+        plt.plot(tt, true_pn, 'b-', label='Theory (normalized)', linewidth=2)
+        plt.plot(tt, pred_pn, 'r--', label='PINN prediction (normalized)', linewidth=1.5)
         plt.xlabel('Time (μs)')
-        plt.ylabel('Time factor cos(ωt) (dimensionless)')
-        plt.title('Stokes time factor: theory vs PINN')
+        plt.ylabel(f'cos(ωt) / |cos|_max  (|cos|_max = {y_scale:.3e})')
+        plt.title('Stokes time factor: theory vs PINN (display normalized)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.ylim(-1.1, 1.1)

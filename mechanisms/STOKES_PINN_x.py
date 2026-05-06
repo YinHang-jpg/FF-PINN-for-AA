@@ -103,17 +103,17 @@ class StokesNetX(nn.Module):
 
 def theoretical_stokes_force_x(x, particle_radius=1e-6):
     """
-    Reference spatial factor cos(kx) from Stokes_drag.py:
-    Returns cos(2*pi*x/lambda); other coefficients applied upstream
+    Real physical spatial factor of the acoustic Eulerian velocity used in the
+    Stokes-drag composition: cos(2*pi*x/lambda).
+    This is the genuine cos(k x) modulation (dimensionless, in [-1, 1] by
+    nature of cos). It is combined downstream as
+        F_drag = -drag_coeff * (vx - stokes_amp * cos(omega t) * cos(k x))
+    where drag_coeff and stokes_amp carry the SI units, so this branch must
+    NOT be rescaled to a different numeric range.
     """
-    # Wavelength / wavenumber
     wavelength = sound_speed / frequency
     k = 2 * np.pi / wavelength
-    
-    # Spatial factor cos(2*pi*x/lambda)
-    position_factor = torch.cos(k * x)
-    
-    return position_factor  # dimensionless in [-1, 1]
+    return torch.cos(k * x)
 
 
 def main():
@@ -219,18 +219,20 @@ def main():
         print(f"\n=== Test metrics ===")
         print(f"Mean rel. error: {mean_error*100:.2f}%")
         print(f"Max rel. error: {max_error*100:.2f}%")
+        print(f"Peak |cos(k x)| (theory): {true_force.abs().max().item():.3e}")
 
-        # Plot analytic vs model along x
+        # Display only: scale by peak |cos(kx)| so the figure stays in [-1, 1].
+        y_scale = float(true_force.abs().max().item()) + 1e-30
         x_mm = (test_x * 1000.0).detach().cpu().numpy().flatten()
-        pred_fx = pred_force.detach().cpu().numpy().flatten()
-        true_fx = true_force.detach().cpu().numpy().flatten()
-        
+        pred_pn = (pred_force / y_scale).detach().cpu().numpy().flatten()
+        true_pn = (true_force / y_scale).detach().cpu().numpy().flatten()
+
         plt.figure(figsize=(7, 4))
-        plt.plot(x_mm, true_fx, 'b-', label='Theory', linewidth=2)
-        plt.plot(x_mm, pred_fx, 'r--', label='PINN Prediction', linewidth=1.5)
+        plt.plot(x_mm, true_pn, 'b-', label='Theory (normalized)', linewidth=2)
+        plt.plot(x_mm, pred_pn, 'r--', label='PINN prediction (normalized)', linewidth=1.5)
         plt.xlabel('Position x (mm)')
-        plt.ylabel('Position factor cos(kx) (dimensionless)')
-        plt.title('Stokes position factor: theory vs PINN')
+        plt.ylabel(f'cos(kx) / |cos|_max  (|cos|_max = {y_scale:.3e})')
+        plt.title('Stokes position factor: theory vs PINN (display normalized)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.ylim(-1.1, 1.1)

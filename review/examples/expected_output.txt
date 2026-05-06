@@ -1,0 +1,122 @@
+FF-PINN minimal example — expected output
+==========================================
+
+This file lists the lines printed by
+
+    python review/examples/run_example.py
+
+The example imports `run_single_simulation` from
+`results/PD_vs_time/PD_time.py` and integrates the PINN model for
+0.01 s of physical time (10 000 timesteps with dt = 1e-6 s). It
+then loads the bundled DEM and FEM (COMSOL) reference trajectories
+and writes a single-time-point comparison plot
+`review/examples/density_comparison_t0.01s.png` in the same style
+as `results/PD_vs_time/comparison/density_comparison_group1.png`,
+but containing only the t = 0.01 s curves (PINN red / DEM green /
+FEM blue).
+
+Reference run on Intel Core i7-12700H + NVIDIA RTX 3060 Laptop,
+32 GB RAM, Windows 10 (Python 3.10.12, NumPy 1.26.4,
+PyTorch 2.1.0 + cu118):
+
+------------------------------ BEGIN -------------------------------
+========================================================================
+FF-PINN review/examples/run_example.py
+========================================================================
+Config              : <repo>/review/examples/demo_input.json
+Repository root     : <repo>
+Steps / dt          : 10000 steps x 1e-06 s = 0.0100 s simulated
+
+[PINN] Checkpoints: repository root folder PINN/ (PD_time default).
+
+[PINN] Running PD_time.run_single_simulation(total_steps=10000, save_positions=True, position_interval=0.01)
+Using model: PINN
+  [ok] ARF x weights: <repo>/PINN/arf_model_x.pth
+  [ok] ARF t weights: <repo>/PINN/arf_model_t.pth
+  ...
+  [PhysicalUnifiedModel] Inferred f = 10000.0 Hz (t_max=0.000100 s)
+  [PhysicalUnifiedModel] Wavelength ~ 34.00 mm
+  [PhysicalUnifiedModel] Nodal spacing ~ 17.00 mm
+Starting calculation: 10000 steps
+Fixed timestep: 1.00e-06 s (0.1 microsecond)
+Total simulation time: 0.010000 s (10.000 ms)
+Position saving enabled: every 0.01 s
+  Saved positions at t=0.0000s (step 0)
+  Saved final positions at t=0.0100s (step 10000)
+Calculation completed: ~16 s
+Total position snapshots saved: 2
+[PINN] Wall time: ~16 s
+[PINN] Snapshots at t = [0.0, 0.01]
+[PINN] Using snapshot closest to 0.01 s -> t = 0.0100 s (4400 particles)
+[PINN] Relative change range [-19 %, +24 %]
+
+[DEM ] Loading <repo>/results/PD_vs_time/dem_particle_distribution_data.csv
+[DEM ] Relative change range [-18 %, +26 %]
+
+[FEM ] Loading <repo>/validation/comsol_positions.csv
+[FEM ] Snapshot closest to 0.01 s -> t = 0.0100 s (4400 particles)
+[FEM ] Relative change range [-19 %, +25 %]
+[plot] Saved figure to <repo>/review/examples/density_comparison_t0.01s.png
+
+------------------------------------------------------------------------
+Summary
+------------------------------------------------------------------------
+  PINN target t       : 0.0100 s (wall time ~16 s on GPU, ~3-5 min on CPU)
+  PINN range          : [-19 %, +24 %]
+  DEM  range          : [-18 %, +26 %]
+  FEM  target t       : 0.0100 s
+  FEM  range          : [-19 %, +25 %]
+  PINN vs. FEM RMSE   : ~0.6 %     (over the [2, 32] mm window)
+  PINN vs. FEM MAE    : ~0.5 %
+  Output figure       : review/examples/density_comparison_t0.01s.png
+
+Done.
+------------------------------- END --------------------------------
+
+What to verify
+--------------
+
+1. **Loader uses the default checkpoint directory**:
+   "[PINN] Checkpoints: repository root folder PINN/ (PD_time default)."
+   Weights are read from `<repo>/PINN/*.pth` and matching JSON, not
+   from `PINN/freq_*k/`, unless you set `pinn_model_base_path` in
+   `demo_input.json`.
+
+2. **All three pipelines reach the target t = 0.01 s** with 4400
+   particles and the same KDE bandwidth (sigma = 0.3 mm).
+
+3. **Relative-change ranges agree to within ~3 %** between PINN /
+   DEM / FEM, with PINN vs. FEM RMSE ~0.6 % over the
+   [2 mm, 32 mm] analysis window. (The exact numbers depend on the
+   random seed used for particle initialisation.)
+
+4. **Output figure** `density_comparison_t0.01s.png` shows two
+   peaks at x ~ 8 mm and x ~ 25 mm, three colour-coded curves
+   tracking each other, and a horizontal axis of [2, 32] mm.
+
+Required local files
+--------------------
+
+The example calls into PINN_main / PD_time and therefore needs:
+
+    - PINN/*.pth  + matching *_normalization_params.json
+      (repository root `PINN/` folder; required for PINN inference)
+    - results/PD_vs_time/dem_particle_distribution_data.csv
+      (DEM baseline column "relative_change_1.0e+04")
+    - validation/comsol_positions.csv
+      (FEM trajectory; row closest to t = 0.01 s)
+
+These are bundled with the project. They are listed in
+`.gitignore`, so they may be absent from a fresh clone of the bare
+repository; in that case rerun the producing scripts
+(`mechanisms/*_PINN_*.py main()`,
+`results/PD_vs_time/PD_vs_time_DEM.py`, COMSOL export) before
+running this example.
+
+Plotting
+--------
+
+`python review/examples/run_example.py --plot` opens the figure in
+the default matplotlib backend in addition to writing the PNG. On a
+headless server the script will still succeed and the PNG file is
+the canonical artifact.

@@ -99,14 +99,30 @@ class ARFNet(nn.Module):
         return self.layers(fourier_features)
 
 
-def theoretical_spgf_factor_x(x):
+def theoretical_arf(x, particle_radius=1e-6):
     """
-    Dimensionless SPGF spatial factor for training.
-    Targets cos(kx) in [-1, 1].
+    SPGF / ARF spatial force at t = 0 (Newtons), same construction as mechanisms/ARF.py
+    with cos(omega t) = 1:
+
+        F(x, 0) = π d_p^2 [p(x - √2 d_p/4, 0) - p(x + √2 d_p/4, 0)] / 4
+
+    with p(x, 0) = (4π A p_0 γ sin(k x)) / λ.
     """
     wavelength = c_0 / frequency
     k = 2 * np.pi / wavelength
-    return torch.cos(k * x)
+
+    d_p = 2.0 * particle_radius
+    offset = np.sqrt(2.0) * d_p / 4.0
+    x_front = x - offset
+    x_back = x + offset
+
+    A = torch.tensor(get_amplitude(), dtype=x.dtype, device=x.device)
+    p_front = 2.0 * 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_front) / wavelength
+    p_back = 2.0 * 2.0 * np.pi * A * p_0 * gamma * torch.sin(k * x_back) / wavelength
+
+    pressure_diff = p_front - p_back
+    force_magnitude = np.pi * d_p ** 2 * pressure_diff / 4.0
+    return force_magnitude
 
 
 def main():
@@ -137,7 +153,7 @@ def main():
     N = 20000
     x = (torch.rand(N, 1, device=device) * x_range - x_range/2).float()  # [-25.5, 25.5] mm
 
-    F_theory = theoretical_spgf_factor_x(x).detach()
+    F_theory = theoretical_arf(x).detach()
 
     # Feature scaling (x)
     x_min, x_max = -x_range/2, x_range/2
@@ -202,34 +218,37 @@ def main():
         test_inp = (test_x - x_min) / (x_max - x_min)
         pred_norm = model(test_inp)
         pred_force = pred_norm * force_sigma + force_mu
-        true_force = theoretical_spgf_factor_x(test_x)
+        true_force = theoretical_arf(test_x)
         
-        # Error statistics
+        # Error statistics on the real physical force
         relative_errors = torch.abs(pred_force - true_force) / (torch.abs(true_force) + 1e-30)
         mean_error = torch.mean(relative_errors).item()
         max_error = torch.max(relative_errors).item()
-        
+
         print(f"\n=== Test metrics ===")
         print(f"Mean rel. error: {mean_error*100:.2f}%")
         print(f"Max rel. error: {max_error*100:.2f}%")
+        print(f"Peak |F_x| (theory): {true_force.abs().max().item():.3e} N")
 
-        # Plot analytic vs model along x
+        # Display only: rescale theory and prediction by the theoretical peak |F|
+        # so the plot stays in [-1, 1]. The trained model / JSON encode real Newtons.
+        y_scale = float(true_force.abs().max().item()) + 1e-30
         x_mm = (test_x * 1000.0).detach().cpu().numpy().flatten()
-        pred_pn = pred_force.detach().cpu().numpy().flatten()
-        true_pn = true_force.detach().cpu().numpy().flatten()
+        pred_pn = (pred_force / y_scale).detach().cpu().numpy().flatten()
+        true_pn = (true_force / y_scale).detach().cpu().numpy().flatten()
         plt.figure(figsize=(7, 4))
-        plt.plot(x_mm, true_pn, 'b-', label='Theory', linewidth=2)
-        plt.plot(x_mm, pred_pn, 'r--', label='PINN prediction', linewidth=1.5)
+        plt.plot(x_mm, true_pn, 'b-', label='Theory (normalized)', linewidth=2)
+        plt.plot(x_mm, pred_pn, 'r--', label='PINN prediction (normalized)', linewidth=1.5)
         plt.xlabel('Position x (mm)')
-        plt.ylabel('Position factor cos(kx) (dimensionless)')
-        plt.title('SPGF position factor: theory vs PINN')
+        plt.ylabel(f'F_x / |F_x|_max  (|F_x|_max = {y_scale:.3e} N)')
+        plt.title('SPGF spatial force: theory vs PINN (display normalized)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.ylim(-1.1, 1.1)
         plt.xlim(x_min * 1000.0, x_max * 1000.0)
         plt.tight_layout()
         plt.show()
-        print("\nPosition (mm) | Pred | Theory | Relative error")
+        print("\nPosition (mm) | Pred (N) | Theory (N) | Relative error")
         print("-"*60)
         for i in range(0, 100, 10):
             xv = float(test_x[i].item() * 1000)

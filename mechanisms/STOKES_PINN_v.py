@@ -89,12 +89,11 @@ class StokesNetV(nn.Module):
 
 def theoretical_stokes_force_v(vx, particle_radius=1e-6):
     """
-    Reference Stokes factor from Stokes_drag.py (x-component, velocity part):
-    Returns vx factor; scaling applied when composing forces
+    Real physical velocity contribution to Stokes drag (x-component): returns vx in m/s.
+    The drag coefficient (3*pi*mu*d_p / C_c) is applied downstream when composing the
+    full force, so this branch must learn the velocity itself, not vx / v_max.
     """
-    # Dimensionless velocity factor ~ [-1, 1]
-    v_max = 0.1
-    return vx / v_max
+    return vx
 
 
 def main():
@@ -189,26 +188,29 @@ def main():
         pred_force = pred_norm * force_sigma + force_mu
         true_force = theoretical_stokes_force_v(test_vx)
         
-        # Error statistics
+        # Error statistics on real physical velocity (m/s)
         relative_errors = torch.abs(pred_force - true_force) / (torch.abs(true_force) + 1e-30)
         mean_error = torch.mean(relative_errors).item()
         max_error = torch.max(relative_errors).item()
-        
+
         print(f"\n=== Test metrics ===")
         print(f"Mean rel. error: {mean_error*100:.2f}%")
         print(f"Max rel. error: {max_error*100:.2f}%")
+        print(f"Peak |vx| (theory): {true_force.abs().max().item():.3e} m/s")
 
-        # Plot analytic vs model along v
+        # Display only: rescale by theoretical peak |vx| so the plot stays in [-1, 1].
+        # The trained model / JSON encode real m/s.
+        y_scale = float(true_force.abs().max().item()) + 1e-30
         vx_ms = (test_vx * 1000.0).detach().cpu().numpy().flatten()
-        pred_fx = pred_force.detach().cpu().numpy().flatten()
-        true_fx = true_force.detach().cpu().numpy().flatten()
-        
+        pred_fx = (pred_force / y_scale).detach().cpu().numpy().flatten()
+        true_fx = (true_force / y_scale).detach().cpu().numpy().flatten()
+
         plt.figure(figsize=(7, 4))
-        plt.plot(vx_ms, true_fx, 'b-', label='Theory', linewidth=2)
-        plt.plot(vx_ms, pred_fx, 'r--', label='PINN Prediction', linewidth=1.5)
+        plt.plot(vx_ms, true_fx, 'b-', label='Theory (normalized)', linewidth=2)
+        plt.plot(vx_ms, pred_fx, 'r--', label='PINN Prediction (normalized)', linewidth=1.5)
         plt.xlabel('Velocity vx (mm/s)')
-        plt.ylabel('Velocity factor vx/v_max (dimensionless)')
-        plt.title('Stokes velocity factor: theory vs PINN')
+        plt.ylabel(f'vx / |vx|_max  (|vx|_max = {y_scale:.3e} m/s)')
+        plt.title('Stokes velocity factor: theory vs PINN (display normalized)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.ylim(-1.1, 1.1)

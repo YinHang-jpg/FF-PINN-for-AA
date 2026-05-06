@@ -1,0 +1,22 @@
+{
+  "_comment": "Minimal input configuration for review/examples/run_example.py.",
+  "_pipeline": "PINN simulation via results/PD_vs_time/PD_time.py for 0.01 s, then a single-time PINN/DEM/FEM comparison plot.",
+
+  "n_steps": 10000,
+  "dt_s": 1e-6,
+  "target_time_s": 0.01,
+
+  "_pinn_model_note": "Default: checkpoints in the repository root PINN/ folder (same as PD_time.load_physical_unified_model). Optional key \"pinn_model_base_path\" may point to another directory (e.g. PINN/freq_10k) for advanced use; omit it or set null to use PINN/ only.",
+  "pinn_model_base_path": null,
+
+  "x_window_mm": [2.0, 32.0],
+  "kde_sigma_mm": 0.3,
+  "kde_n_grid": 200,
+
+  "pinn_csv": "results/PD_vs_time/pinn_particle_positions.csv",
+  "dem_csv": "results/PD_vs_time/dem_particle_distribution_data.csv",
+  "fem_csv": "validation/comsol_positions.csv",
+  "dem_column": "relative_change_1.0e+04",
+
+  "output_figure": "density_comparison_t0.01s.png"
+}

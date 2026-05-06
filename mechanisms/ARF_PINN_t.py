@@ -98,10 +98,14 @@ class ARFNetT(nn.Module):
 
 def theoretical_time_factor(t):
     """
-    Target time factor cos(omega t)
+    Real physical time factor of the SPGF / ARF: cos(omega t).
+    This is the actual carrier-time modulation (dimensionless, in [-1, 1] by
+    nature of cos). The full ARF in Newtons is reconstructed downstream as
+    ARF_PINN_x(x) * theoretical_time_factor(t), so this branch must NOT be
+    rescaled to a different numeric range.
     """
     omega = 2 * np.pi * frequency
-    return torch.cos(omega * t)  # dimensionless in [-1, 1]
+    return torch.cos(omega * t)
 
 
 def main():
@@ -206,18 +210,20 @@ def main():
         print(f"\n=== Test metrics ===")
         print(f"Mean rel. error: {mean_error*100:.2f}%")
         print(f"Max rel. error: {max_error*100:.2f}%")
-        
-        # Plot temporal factor
+        print(f"Peak |cos(omega t)| (theory): {true_time.abs().max().item():.3e}")
+
+        # Display only: normalize by peak |cos| for a consistent [-1, 1] figure scale.
+        y_scale = float(true_time.abs().max().item()) + 1e-30
         import matplotlib.pyplot as plt
         tt = (test_t * 1e6).detach().cpu().numpy().flatten()
-        pred_np = pred_time.detach().cpu().numpy().flatten()
-        true_np = true_time.detach().cpu().numpy().flatten()
+        pred_np = (pred_time / y_scale).detach().cpu().numpy().flatten()
+        true_np = (true_time / y_scale).detach().cpu().numpy().flatten()
         plt.figure(figsize=(7, 4))
-        plt.plot(tt, true_np, 'b-', label='Theory', linewidth=2)
-        plt.plot(tt, pred_np, 'r--', label='PINN prediction', linewidth=1.5)
+        plt.plot(tt, true_np, 'b-', label='Theory (normalized)', linewidth=2)
+        plt.plot(tt, pred_np, 'r--', label='PINN prediction (normalized)', linewidth=1.5)
         plt.xlabel('Time (μs)')
-        plt.ylabel('Time factor cos(ωt) (dimensionless)')
-        plt.title('SPGF time factor vs time (theory vs PINN)')
+        plt.ylabel(f'cos(ωt) / |cos|_max  (|cos|_max = {y_scale:.3e})')
+        plt.title('SPGF time factor vs time (display normalized)')
         plt.grid(True, alpha=0.3)
         plt.legend()
         plt.ylim(-1.1, 1.1)
@@ -230,7 +236,10 @@ def main():
         json.dump({
             't_min': t_min, 't_max': t_max,
             'time_factor_mu': float(time_factor_mu.item()),
-            'time_factor_sigma': float(time_factor_sigma.item())
+            'time_factor_sigma': float(time_factor_sigma.item()),
+            # Aliases for loaders that expect force_mu / force_sigma (e.g. UnifiedNormalizer)
+            'force_mu': float(time_factor_mu.item()),
+            'force_sigma': float(time_factor_sigma.item()),
         }, f)
     print("Saved ARF-t model + JSON.")
 
