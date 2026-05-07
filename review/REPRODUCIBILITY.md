@@ -11,7 +11,7 @@ Windows commands are noted where relevant.
 
 ```bash
 # 1. Clone and enter the repository
-git clone <this-repository-url> FF-PINN
+git clone https://github.com/YinHang-jpg/FF-PINN
 cd FF-PINN
 
 # 2. Set up the Python environment (see review/ENVIRONMENT.md)
@@ -24,7 +24,7 @@ pip install torch scipy tqdm
 export PYTHONPATH=$(pwd)                     # Windows (PS): $env:PYTHONPATH = (Get-Location).Path
 
 # 4. Smoke-test the install with the minimal demo
-python review/examples/run_example.py
+python -m review.examples.run_example
 ```
 
 The demo wraps `results/PD_vs_time/PD_time.py`'s

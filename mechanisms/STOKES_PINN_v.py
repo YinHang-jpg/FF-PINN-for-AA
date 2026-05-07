@@ -140,7 +140,7 @@ def main():
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5000)
 
     # Train until target loss
-    target_loss = 1e-8
+    target_loss = 1e-7
     print_interval = 500
     epoch = 0
     losses = []
