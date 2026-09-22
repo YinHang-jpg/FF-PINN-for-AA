@@ -41,10 +41,11 @@ PyTorch CUDA build for their machine:
 torch>=1.13         # CPU or CUDA build (see https://pytorch.org)
 scipy>=1.9
 tqdm>=4.64
+pandas>=1.3
 ```
 
-The `review/examples/run_example.py` demo only requires
-`torch`, `numpy`, and (optionally) `matplotlib`.
+The `review/examples/run_example.py` demo requires
+`torch`, `numpy`, `scipy`, `pandas`, and `matplotlib`.
 
 ---
 

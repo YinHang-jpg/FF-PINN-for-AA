@@ -94,9 +94,12 @@ python results/particle_distribution/displacement_replot.py
 
 ### Fig. 10 — relative concentration after 100 / 1000 cycles
 
+Manuscript PNGs are already in `figures/fig10_concentration_{100,1000}cycles.png`.
+
 ```bash
+# optional: re-copy from local source PNGs (does not re-simulate)
 python results/parameter_sweep/plot_fig10_concentration.py
-# regenerate source PNGs (~20 min, needs PINN/freq_*k packs):
+# full regen from simulation (~20 min, needs PINN/freq_*k packs):
 # python results/parameter_sweep/freq_sweep.py
 ```
 
@@ -123,11 +126,15 @@ python results/kernel/composite.py
 # optional curve refresh from kernel NPZ caches: python results/kernel/plot_A.py
 ```
 
-### Appendix Figs. A.1–A.3 — literature kernel comparison
+### Appendix Figs. A — literature / kernel panels
+
+Tracked outputs: `figA_compare_mednikov_kernel.png`,
+`figA_compare_dong2006_frequency.png`, `figA_compare_dong2006_size.png`,
+`figA_compare_kernel_heatmaps.png`.
 
 ```bash
-python results/Appendix_A/compare_literature.py
-python results/Appendix_A/heatmap.py
+python results/Appendix_A/compare_literature.py   # needs PINN/
+python results/Appendix_A/heatmap.py --plot-only  # offline from tracked NPZ
 ```
 
 ---
