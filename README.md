@@ -103,9 +103,8 @@ hydrodynamic mechanisms are outside the scope of the present surrogates and are
 ```bibtex
 @article{ffpinn_aa,
   title   = {{Accelerating Acoustic Agglomeration Predictions: A Physics-informed Neural Network with Fourier Featuring for Sound Pressure Gradient and Stokes Drag}},
-  author  = {Yin, Hang and Liu, Pengzhan and Ng, Bing Feng},
-  journal = {<journal>},
-  year    = {<year>},
-  note    = {Code release accompanying the manuscript}
+  author  = {Hang Yin and Pengzhan Liu and Bing Feng Ng},
+  journal = {Computational Physics Communications},
+  year    = {2026}
 }
 ```
