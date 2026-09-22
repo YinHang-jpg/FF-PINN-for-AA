@@ -15,6 +15,10 @@
 # Keep the COMSOL validation project used in the manuscript
 !FEM_validation.mph
 
+# Manuscript figure outputs
+!figures/
+!figures/**
+
 # ---- Data / model artifacts ----
 *.csv
 *.dat
