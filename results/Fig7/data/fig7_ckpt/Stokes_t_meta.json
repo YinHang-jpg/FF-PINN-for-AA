@@ -1,0 +1,9 @@
+{
+  "key": "Stokes_t",
+  "frequency_Hz": 8000.0,
+  "kind": "t_us",
+  "t_min": 0.0,
+  "t_max": 0.000125,
+  "force_mu": -0.004145640879869461,
+  "force_sigma": 0.7050474286079407
+}

@@ -1,7 +1,7 @@
 # sound_source_standing.py
 import numpy as np
 
-frequency = 10000  # Hz
+frequency = 8000  # Hz
 sound_pressure_level = 168.5  # dB
 
 

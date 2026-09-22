@@ -91,12 +91,12 @@ def calculate_particle_density(particle_positions_mm, x_grid_mm, sigma=0.3):
 
 def main():
     """
-    主函数：读取COMSOL数据并绘制粒子数密度随时间的变化
+    :COMSOL
     
-    功能：
-    - 自动检测CSV文件中的时间点数量（第一列）
-    - 自动处理任意数量的粒子（后续列）
-    - 生成两张图：第一张包含t=0.01, 0.03, 0.05s，第二张包含t=0.06, 0.08, 0.1s
+    Features:
+    - CSV()
+    - ()
+    - :t=0.01, 0.03, 0.05s,t=0.06, 0.08, 0.1s
     """
     
     print("="*80)

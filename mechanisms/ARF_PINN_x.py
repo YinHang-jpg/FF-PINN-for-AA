@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -208,7 +209,7 @@ def main():
     plt.ylabel('Loss')
     plt.title('SPGF Spatial-Force PINN Training Loss')
     plt.grid(True)
-    plt.show()
+    Path('PINN').mkdir(parents=True, exist_ok=True); plt.savefig(f'PINN/{Path(__file__).stem}_plot.png', dpi=200, bbox_inches='tight'); plt.close()
     
     # Error report
     model.eval()
@@ -247,7 +248,7 @@ def main():
         plt.ylim(-1.1, 1.1)
         plt.xlim(x_min * 1000.0, x_max * 1000.0)
         plt.tight_layout()
-        plt.show()
+        Path('PINN').mkdir(parents=True, exist_ok=True); plt.savefig(f'PINN/{Path(__file__).stem}_plot.png', dpi=200, bbox_inches='tight'); plt.close()
         print("\nPosition (mm) | Pred (N) | Theory (N) | Relative error")
         print("-"*60)
         for i in range(0, 100, 10):
@@ -258,6 +259,7 @@ def main():
             print(f"{xv:8.1f} | {pv:11.2e} | {tv:11.2e} | {rel:8.1%}")
 
     # Save weights + JSON under PINN/ for plotting utilities
+    Path('PINN').mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), 'PINN/arf_model_x.pth')
     with open('PINN/arf_model_x_normalization_params.json', 'w') as f:
         json.dump({

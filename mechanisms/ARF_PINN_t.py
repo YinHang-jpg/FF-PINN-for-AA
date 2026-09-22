@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -190,7 +191,7 @@ def main():
     plt.ylabel('Loss')
     plt.title('SPGF Time-Factor PINN Training Loss')
     plt.grid(True)
-    plt.show()
+    Path('PINN').mkdir(parents=True, exist_ok=True); plt.savefig(f'PINN/{Path(__file__).stem}_plot.png', dpi=200, bbox_inches='tight'); plt.close()
     
     # Error report
     model.eval()
@@ -228,9 +229,10 @@ def main():
         plt.legend()
         plt.ylim(-1.1, 1.1)
         plt.tight_layout()
-        plt.show()
+        Path('PINN').mkdir(parents=True, exist_ok=True); plt.savefig(f'PINN/{Path(__file__).stem}_plot.png', dpi=200, bbox_inches='tight'); plt.close()
 
     # Save weights + JSON
+    Path('PINN').mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), 'PINN/arf_model_t.pth')
     with open('PINN/arf_model_t_normalization_params.json', 'w') as f:
         json.dump({

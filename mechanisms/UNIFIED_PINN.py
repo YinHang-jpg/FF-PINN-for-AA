@@ -199,15 +199,23 @@ class UnifiedPINN(nn.Module):
  
 class PhysicalUnifiedModel(nn.Module):
     """Inference wrapper: five sub-networks + analytic Stokes-amplitude closure -> Fx [N]."""
-    def __init__(self, models, unified_norm, device='cpu'):
+    def __init__(self, models, unified_norm, device='cpu', frequency=None):
         super().__init__()
         self.models = models
         self.unified_norm = unified_norm
         self.device = torch.device(device)
-        
-        t_max = unified_norm.stats.get('t_max', 1.0/10000)
-        self.inferred_frequency = 1.0 / t_max if t_max > 0 else 10000
-        print(f"  [PhysicalUnifiedModel] Inferred f = {self.inferred_frequency:.1f} Hz (t_max={t_max:.6f} s)")
+
+        if frequency is not None and float(frequency) > 0:
+            self.inferred_frequency = float(frequency)
+            src = "path/arg"
+        else:
+            t_max = unified_norm.stats.get('t_max', 1.0 / 10000)
+            self.inferred_frequency = 1.0 / t_max if t_max > 0 else 10000
+            src = f"t_max={unified_norm.stats.get('t_max')}"
+        print(
+            f"  [PhysicalUnifiedModel] f = {self.inferred_frequency:.1f} Hz "
+            f"(from {src})"
+        )
         print(f"  [PhysicalUnifiedModel] Wavelength ~ {340.0/self.inferred_frequency*1000:.2f} mm")
         print(f"  [PhysicalUnifiedModel] Nodal spacing ~ {340.0/self.inferred_frequency*1000/2:.2f} mm")
  

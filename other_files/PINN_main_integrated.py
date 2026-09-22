@@ -1,4 +1,4 @@
-# Fix Windows console UTF-8（只执行一次）
+#
 import sys
 if sys.platform.startswith('win'):
     import codecs
@@ -152,7 +152,7 @@ def load_physical_unified_model(device):
     Args:
         device: torch device
     """
-    # 检查是否指定了特定的模型文件夹（通过环境变量）
+    #
     density_folder = os.environ.get('PINN_DENSITY_FOLDER', None)
     freq_folder = os.environ.get('PINN_FREQ_FOLDER', None)
     
@@ -305,7 +305,7 @@ def run_single_simulation(total_steps, suppress_output=True, save_positions=Fals
    
     # Calculate distribution
     positions_final_np = positions_t.detach().cpu().numpy()
-    x_grid = np.linspace(2.0, 32.0, 500)  # 增加到500个点以提高平滑度
+    x_grid = np.linspace(2.0, 32.0, 500)  # 500
     
     initial_concentrations = calculate_concentration_distribution(initial_positions, x_grid)
     final_concentrations = calculate_concentration_distribution(positions_final_np, x_grid)
@@ -373,7 +373,7 @@ def main():
    
     # Calculate distribution
     positions_final_np = positions_t.detach().cpu().numpy()
-    x_grid = np.linspace(2.0, 32.0, 500)  # 增加到500个点以提高平滑度
+    x_grid = np.linspace(2.0, 32.0, 500)  # 500
     
     initial_concentrations = calculate_concentration_distribution(initial_positions, x_grid)
     final_concentrations = calculate_concentration_distribution(positions_final_np, x_grid)

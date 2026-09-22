@@ -1,0 +1,104 @@
+{
+  "A_zhang2018": {
+    "paper": "Mednikov orthokinetic K (Shang et al. 2018 form)",
+    "conditions": {
+      "f_Hz": 8000.0,
+      "SPL_dB": 150.0,
+      "rho_p": 1000.0,
+      "d1_um": 10.0,
+      "wave": "standing antinode"
+    },
+    "dem_over_mednikov": 1.010343675703119,
+    "pinn_over_dem": 0.7842209765405264,
+    "figure": "compare_zhang2018_kernel.png"
+  },
+  "B_dong2006_freq": {
+    "paper": "Dong et al. (2006) Fig.4 (axis extended for trained PINN packs)",
+    "pinn_weights_used": true,
+    "pinn_freqs_Hz": [
+      8000.0,
+      10000.0
+    ],
+    "marker_meaning": "FF-PINN trained packs \u2192 entrainment \u2192 Dong Eqs.5\u201310",
+    "peaks": {
+      "(10,6) $\\mu$m": {
+        "lit_f_Hz": 144.11741147575518,
+        "lit_L_um": 88.90124641529512,
+        "paper_f_opt_Hz": 140.0,
+        "dem_f_Hz": 144.11741147575518,
+        "dem_L_um": 90.4767821083674,
+        "pinn_freqs_Hz": [
+          8000.0,
+          10000.0
+        ],
+        "pinn_L_um": [
+          0.022948879182032242,
+          0.009162413899089268
+        ],
+        "pinn_over_dong_median": 1.0028515610241906
+      },
+      "(10,4) $\\mu$m": {
+        "lit_f_Hz": 186.2291861807067,
+        "lit_L_um": 86.51790943544731,
+        "paper_f_opt_Hz": 178.0,
+        "dem_f_Hz": 187.17948717948718,
+        "dem_L_um": 86.77950681294209,
+        "pinn_freqs_Hz": [
+          8000.0,
+          10000.0
+        ],
+        "pinn_L_um": [
+          0.10853850701337978,
+          0.047126489631101304
+        ],
+        "pinn_over_dong_median": 1.0021214418658473
+      }
+    },
+    "pinn_stats": [
+      {
+        "pair": "(10,6) $\\mu$m",
+        "pinn_over_dong_median": 1.0028515610241906
+      },
+      {
+        "pair": "(10,4) $\\mu$m",
+        "pinn_over_dong_median": 1.0021214418658473
+      }
+    ],
+    "figure": "compare_dong2006_frequency.png"
+  },
+  "C_gonzalez2000": {
+    "paper": "Gonzalez (2000)",
+    "pinn_used": true,
+    "max_rel_err": 0.2118045943048166,
+    "figure": "compare_gonzalez2000_entrainment.png"
+  },
+  "D_dong2006_size": {
+    "paper": "Dong (2006) Eqs.5\u201310 orthokinetic L_eff (Fig.5b conditions)",
+    "conditions": {
+      "f_Hz": 10000.0,
+      "SPL_dB": 160.0,
+      "rho_p": 2400.0
+    },
+    "quantity": "L_orth^eff (wake-free)",
+    "stats": [
+      {
+        "dL_um": 4.0,
+        "dem_over_lit_ortho": 1.0042639255313506,
+        "pinn_over_dem": 0.9318629117969558
+      },
+      {
+        "dL_um": 6.0,
+        "dem_over_lit_ortho": 1.0033636214621096,
+        "pinn_over_dem": 0.939341051324946
+      }
+    ],
+    "figure": "compare_dong2006_size.png",
+    "note": "Compares Dong's orthokinetic formula (Eqs.5\u201310); wake not plotted."
+  },
+  "notes": [
+    "Literature curves: closed-form equations from the cited papers.",
+    "DEM: mechanisms.Stokes_drag (per-particle d) + optional mechanisms.ARF SPGF.",
+    "FF-PINN: _kernel_common.force_for_diameter (10 kHz weights).",
+    "Wake effect omitted (outside model scope)."
+  ]
+}

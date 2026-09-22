@@ -1,19 +1,19 @@
-# 基础依赖
+# 
 numpy>=1.20.0
 matplotlib>=3.3.0
 
-# 基础优化版本依赖
+# 
 numba>=0.56.0
 
-# 并行计算依赖
+# 
 joblib>=1.1.0
 
-# 性能监控依赖
+# 
 psutil>=5.8.0
 
-# GPU加速依赖（可选）
-# numba-cuda>=0.56.0  # 需要CUDA工具包
+# GPU（）
+# numba-cuda>=0.56.0  # CUDA
 
-# 开发和测试依赖
+# 
 pytest>=6.0.0
 pytest-benchmark>=3.4.0

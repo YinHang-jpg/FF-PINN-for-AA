@@ -1,39 +1,17 @@
-# `other_files/` — primary simulation drivers and utilities
+# `other_files/` — simulation drivers
 
-This folder hosts **main-entry** style scripts and small tools. The historical root-level `main.py` described in older notes is **not** the current layout; use the paths below.
-
-**How this connects to the paper bundle:** runtime **mechanisms** live in `mechanisms/`, shared **parameters** in `initialization/`, trained **weights** in `PINN/`, and most publication-style **outputs** in `results/`. These scripts wire those folders together from the repo root.
-
-## Main entry scripts
+Main entry points for particle time-stepping. Mechanisms live in `mechanisms/`,
+shared acoustic parameters in `initialization/`, and trained weights in `PINN/`.
 
 | Script | Purpose |
 |--------|---------|
-| `PINN_main.py` | Time marching with **five trained sub-PINNs** (ARF x/t + Stokes x/t/v); no live animation. |
-| `PINN_main_integrated.py` | Uses **`PhysicalUnifiedModel`** (`UNIFIED_PINN`) with weights under `PINN/`. |
-| `clustering.py` | Same force stack as integrated path plus **1D x-merge** collision coalescence and diagnostics. |
-| `DEM_main.py` | Discrete-element style baseline importing `mechanisms.ARF.compute_pressure_gradient_and_apply_arf`. |
-| `PINN_preview.py` | Lightweight preview of forces on a particle layout. |
+| `PINN_main.py` | Time marching with the five trained sub-networks |
+| `PINN_main_integrated.py` | Time marching via `PhysicalUnifiedModel` |
+| `DEM_main.py` | Analytical SPGF + Stokes DEM baseline |
+| `plot_time_comparison.py` | Manuscript Fig. 12 timing plots (from CSV tables below) |
+| `computation_time_comparison.csv` | Wall-clock vs simulated time (`N = 100 000`) |
+| `computation_time_comparision_particle.csv` | Wall-clock vs particle count (`t = 0.05 s`) |
+| `run_density_sweep.py` | Launcher for `results/density_sweep` |
+| `requirements.txt` | Minimal scientific-stack dependencies |
 
-**Encoding:** several scripts call `sys.stdout.reconfigure(encoding="utf-8")` (or equivalent) on Windows so log text stays readable.
-
-## Dependencies
-
-See `other_files/requirements.txt` for a **minimal** list. Training and inference also need **PyTorch**, **SciPy**, and typically **tqdm** — install separately for your CUDA/CPU stack.
-
-## Project root / `PYTHONPATH`
-
-Run these scripts with the **repository root** as the working directory (parent of `mechanisms/`), or export:
-
-```text
-set PYTHONPATH=<path-to-repo-root>
-```
-
-so `import mechanisms` and `import initialization` succeed.
-
-## Models
-
-Trained weights are expected under `PINN/` at the repo root, often in subfolders such as `PINN/freq_8k/`. Some drivers honor `PINN_FREQ_FOLDER` to pick a frequency-specific set.
-
-## Full reviewer map
-
-See `docs/REVIEWER_CODE_MAP.md` at the repository root.
+Run scripts from the repository root (or set `PYTHONPATH` to the root).

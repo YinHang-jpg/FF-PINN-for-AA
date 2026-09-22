@@ -1,0 +1,9 @@
+{
+  "key": "Stokes_x",
+  "frequency_Hz": 8000.0,
+  "kind": "x_mm",
+  "x_min": -0.06375,
+  "x_max": 0.06375,
+  "force_mu": -0.0019358311546966434,
+  "force_sigma": 0.70609450340271
+}

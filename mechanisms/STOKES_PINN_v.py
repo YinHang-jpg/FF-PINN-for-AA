@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,11 +11,11 @@ try:
 except Exception:
     from mechanisms.Stokes_drag import compute_air_velocity_due_to_sound
 
-# Frequency follows project config so freq_sweep_with_training stays consistent
+# Frequency follows initialization.sound_source_standing (paper configuration)
 try:
     from initialization.sound_source_standing import frequency
 except Exception:
-    frequency = 10000  # Hz fallback when not run from repo root
+    frequency = 8000  # Hz fallback when not run from repo root
 sound_pressure_level = 168.5  # dB
 sound_speed = 340  # m/s
 viscosity = 1.8e-5  # Pa·s
@@ -175,7 +176,7 @@ def main():
     plt.ylabel('Loss')
     plt.title('Stokes Velocity-Dependence PINN Training Loss')
     plt.grid(True)
-    plt.show()
+    Path('PINN').mkdir(parents=True, exist_ok=True); plt.savefig(f'PINN/{Path(__file__).stem}_plot.png', dpi=200, bbox_inches='tight'); plt.close()
     
     # Error report
     model.eval()
@@ -215,9 +216,10 @@ def main():
         plt.legend()
         plt.ylim(-1.1, 1.1)
         plt.tight_layout()
-        plt.show()
+        Path('PINN').mkdir(parents=True, exist_ok=True); plt.savefig(f'PINN/{Path(__file__).stem}_plot.png', dpi=200, bbox_inches='tight'); plt.close()
 
     # Save weights + JSON
+    Path('PINN').mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), 'PINN/stokes_model_v.pth')
     with open('PINN/stokes_model_v_normalization_params.json', 'w') as f:
         json.dump({

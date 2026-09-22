@@ -1,107 +1,111 @@
-# FF-PINN — Physics-informed neural networks for acoustic particle dynamics
+# FF-PINN for Acoustic Agglomeration
 
-This repository contains PINN models (SPGF / Stokes branches), particle time-stepping drivers, DEM baselines, COMSOL validation utilities, and post-processing for orthokinetic collision kernels referenced in the accompanying manuscript.
+Physics-informed neural networks with Fourier features (FF-PINN) for particle-resolved
+acoustic agglomeration (AA) under sound pressure gradient force (SPGF) and Stokes drag.
+
+This repository accompanies the manuscript:
+
+> *Accelerating Acoustic Agglomeration Predictions: A Physics-informed Neural Network
+> with Fourier Featuring for Sound Pressure Gradient and Stokes Drag*
+
+Open [`front_page/front_page.html`](front_page/front_page.html) in a browser for a
+visual overview.
 
 ## Quick start
 
-After installing the dependencies (see [`review/ENVIRONMENT.md`](review/ENVIRONMENT.md)), run the minimal example from the repository root:
-
 ```bash
 pip install -r other_files/requirements.txt
-pip install torch scipy tqdm
+pip install torch scipy tqdm pandas
+# from the repository root
 python review/examples/run_example.py
 ```
 
-The example wraps `results/PD_vs_time/PD_time.py` to integrate the PINN model for **0.01 s of physical time** and produces a single-time-point PINN / DEM / FEM density-comparison figure at `review/examples/density_comparison_t0.01s.png` (a `t = 0.01 s` slice of `results/PD_vs_time/comparison/density_comparison_group1.png`). Expected output is documented in [`review/examples/expected_output.txt`](review/examples/expected_output.txt).
+If `PINN/` does not yet contain the five sub-network checkpoints, the example trains
+them automatically (slow on CPU). Use `--skip-train` to fail fast when weights are missing.
 
-If **`PINN/` does not yet contain all five sub-network checkpoints** (`.pth` plus normalization JSON files), `run_example.py` will **automatically run** the training scripts under `mechanisms/` (`ARF_PINN_x.py`, `ARF_PINN_t.py`, `STOKES_PINN_x.py`, `STOKES_PINN_t.py`, `STOKES_PINN_v.py`) from the repository root before the simulation. That training pass can take substantial wall time on CPU; use `python review/examples/run_example.py --skip-train` if you prefer to fail fast when weights are missing.
+## Reproduce manuscript figures
 
-For a high-level narrative of the paper and repository navigation, open **[`front_page/front_page.html`](front_page/front_page.html)** in a browser after cloning (double-click the file locally, or follow the link from your Git host and use **Raw / Download** if HTML is not rendered inline).
+Run all commands from the **repository root**. Figure PNG outputs are written to
+[`figures/`](figures/). Cached JSON / NPZ / CSV used by the plotters are tracked under
+`results/` and `other_files/` (see `.gitignore` whitelist).
 
-For a complete, step-by-step reproduction of the manuscript figures, follow [`review/REPRODUCIBILITY.md`](review/REPRODUCIBILITY.md).
+Train the default pack once if checkpoints are missing:
 
-## Reviewer / supplementary material — `review/`
-
-The folder [`review/`](review/) bundles the documents requested by the journal under *"software implementation and performance details"*:
-
-| File | Purpose |
-|------|---------|
-| [`review/SOFTWARE.md`](review/SOFTWARE.md)             | Software implementation details (language, framework, PINN + Fourier-feature architecture, per-module description, I/O spec). |
-| [`review/PERFORMANCE.md`](review/PERFORMANCE.md)       | Training / inference wall-clock costs and comparison with DEM and COMSOL FEM baselines. |
-| [`review/ENVIRONMENT.md`](review/ENVIRONMENT.md)       | Python version, dependencies, install steps. |
-| [`review/REPRODUCIBILITY.md`](review/REPRODUCIBILITY.md) | Step-by-step instructions to reproduce every manuscript figure. |
-| [`review/CHANGELOG.md`](review/CHANGELOG.md)           | Version history (`v1.0.0` = manuscript-submission release). |
-| [`review/examples/`](review/examples/)                 | Minimal runnable example (`run_example.py`) with input config and expected output. |
-| [`front_page/front_page.html`](front_page/front_page.html) | Standalone overview page (figures + manuscript/repo pointers); open locally in any browser. |
-
-## How the manuscript maps to folders (for reviewers)
-
-| What you are looking for | Where it lives |
-|--------------------------|----------------|
-| **Mechanisms** (ARF, Stokes, unified runtime wrapper, training scripts for the five sub-networks) | `mechanisms/` |
-| **Simulation parameters** (particle placement, standing-wave / SPL settings shared with training) | `initialization/` |
-| **Trained models** (checkpoints and normalization JSON; frequency packs under `PINN/freq_*k/`) | `PINN/` |
-| **Paper figures, sweeps, kernel extraction, convergence checks** | `results/` |
-
-Entry drivers (e.g. `other_files/PINN_main_integrated.py`, `other_files/clustering.py`) import from `mechanisms/` and `initialization/`, load weights from `PINN/`, and write diagnostics or plots under `results/` or the working directory.
-
-## Paper overview (for reviewers)
-
-A **standalone HTML page** at [`front_page/front_page.html`](front_page/front_page.html) summarizes the manuscript’s main points, key results, and how to navigate this repository. After cloning, open that path in Explorer / Finder and launch it in any modern browser (no web server required).
-
-When you view this README on a Git hosting site (e.g. GitHub or GitLab), the link resolves to the normal project URL for that file; use **Raw**, **Download**, or **Open** if the site does not render HTML inline.
-
-## Python environment
-
-- Recommended: **Python 3.10+** (3.9 may work if dependencies install cleanly).
-- Install core scientific stack, then **PyTorch** for your platform from [pytorch.org](https://pytorch.org).
-
-```text
-pip install -r other_files/requirements.txt
-pip install torch scipy tqdm
+```bash
+python mechanisms/ARF_PINN_x.py
+python mechanisms/ARF_PINN_t.py
+python mechanisms/STOKES_PINN_x.py
+python mechanisms/STOKES_PINN_t.py
+python mechanisms/STOKES_PINN_v.py
 ```
 
-Add the **repository root** to `PYTHONPATH` (or run scripts with the project root as the current working directory) so imports such as `mechanisms.*` and `initialization.*` resolve.
+| Manuscript figure | What it shows | Script(s) to run |
+|-------------------|---------------|------------------|
+| **Fig. 1** | Framework schematic | Schematic (not generated by simulation code) |
+| **Fig. 2** | RFF dimension sensitivity (`M = 0…64`) | `python results/RFF/RFF_M.py` (optional cache regen: `python results/RFF/plot_panel_A.py`, `python results/RFF/step_8.py`) |
+| **Fig. 3** | Sampling-size sensitivity vs frequency | `python results/RFF/plot_sampling_regression.py` (optional regen: `python results/RFF/sensitivity.py`) |
+| **Fig. 4** | SPGF field (3D surface + contour) | `python scripts/plot_Fxt_SPGF.py` |
+| **Fig. 5** | Stokes drag field | `python scripts/plot_Fxt_Stokes.py` |
+| **Fig. 6** | Methodology schematic | Schematic (not generated by simulation code) |
+| **Fig. 7** | Training loss + theory vs PINN (five sub-networks) | `python results/Fig7/plot_fig7_training_losses.py` (uses tracked `results/Fig7/data/`; `--retrain` rebuilds) |
+| **Fig. 8** | Particle concentration: DEM / FEM / FF-PINN | `python results/PD_vs_time/comparison/PINN_COMSOL_comparison.py` (CSVs under `results/PD_vs_time/`; optional regen: `PD_time.py`, `PD_vs_time_DEM.py`) |
+| **Fig. 9** | Average displacement vs frequency and SPL | `python results/particle_distribution/displacement_replot.py` (CSV: `displacement_vs_frequency_multi_spl.csv`; optional regen: `displacement_sum.py`) |
+| **Fig. 10** | Relative concentration change after 100 / 1000 cycles | `python results/parameter_sweep/plot_fig10_concentration.py` (curves: `fig10_concentration_curves.npz`; optional regen: `python results/parameter_sweep/freq_sweep.py --cycles 100` / `--cycles 1000`) |
+| **Fig. 11** | Concentration vs particle density | `python results/density_sweep/density_sum.py` |
+| **Fig. 12** | Computational time (FF-PINN / DEM / FEM) | `python other_files/plot_time_comparison.py` (CSV tables in `other_files/`) |
+| **Fig. 13** | Orthokinetic collision kernel | `python results/kernel/composite.py` (optional curve refresh: `python results/kernel/plot_A.py`) |
+| **Fig. A** | Appendix literature kernel panels | `python results/Appendix_A/compare_literature.py` → `figA_compare_mednikov_kernel.png`, `figA_compare_dong2006_frequency.png`, `figA_compare_gonzalez2000_entrainment.png`, `figA_compare_dong2006_size.png`; `python results/Appendix_A/heatmap.py` → `figA_compare_kernel_heatmaps.png` |
 
-## Layout and main entry points
+Force-component marginals used in the methodology section:
 
-| Role | Location |
-|------|----------|
-| Unified decomposition inference (five sub-models) | `other_files/PINN_main.py`, `results/animation/particle_shift.py` |
-| Unified **physical** model wrapper | `other_files/clustering.py`, `other_files/PINN_main_integrated.py` |
-| DEM baseline | `other_files/DEM_main.py` |
-| SPGF / Stokes training scripts | `mechanisms/ARF_PINN_*.py`, `mechanisms/STOKES_PINN_*.py` |
-| Runtime unified normalizer + loader | `mechanisms/UNIFIED_PINN.py` |
-| COMSOL / density validation | `validation/comsol_visualizer.py`, `validation/comsol_dualplot.py` |
-| Orthokinetic kernel post-processing (Fig. 12–style) | `results/kernel/kernel_extractor.py` |
-| Timestep convergence (density metric) | `results/convergence_check/convergence_check.py` |
-| Frequency / density parameter sweeps | `results/parameter_sweep/freq_sweep.py`, `results/density_sweep/density_distribution_plot.py` |
+```bash
+python scripts/plot_x.py
+python scripts/plot_t.py
+```
 
-## Reviewer documentation
+More detail: [`review/REPRODUCIBILITY.md`](review/REPRODUCIBILITY.md).
 
-- **`review/`** — supplementary material requested by the journal (start here).
-- **`docs/REVIEWER_CODE_MAP.md`** — Narrative order: manuscript sections → code paths → data/weights.
-- **`docs/PAPER_CODE_CONSISTENCY.md`** — Kernel script vs. manuscript symbols; frequency list; diameter enhancement vs. optional wake codebase.
+## Repository layout
+
+| Path | Role |
+|------|------|
+| `mechanisms/` | Analytical SPGF / Stokes forces; five FF-PINN trainers; unified inference wrapper |
+| `initialization/` | Standing-wave acoustics and particle placement |
+| `PINN/` | Trained checkpoints (created by training; not required in a clean clone) |
+| `other_files/` | Main simulation drivers and Fig. 12 timing tables |
+| `scripts/` | Force-field plots (Figs. 4–5) |
+| `results/` | Figure drivers and tracked caches (RFF, Fig7, PD_vs_time, kernel, Appendix_A, sweeps) |
+| `validation/` | COMSOL / FEM helpers |
+| `review/` | Software, environment, performance, and reproducibility notes |
+| `front_page/` | Standalone HTML overview |
+| `FEM_validation.mph` | COMSOL Multiphysics validation project |
+
+## Reviewer materials
+
+| Document | Purpose |
+|----------|---------|
+| [`review/SOFTWARE.md`](review/SOFTWARE.md) | Implementation details |
+| [`review/PERFORMANCE.md`](review/PERFORMANCE.md) | Timing notes |
+| [`review/ENVIRONMENT.md`](review/ENVIRONMENT.md) | Dependencies |
+| [`review/REPRODUCIBILITY.md`](review/REPRODUCIBILITY.md) | Step-by-step figure reproduction |
+| [`review/CHANGELOG.md`](review/CHANGELOG.md) | Release history |
+| [`review/examples/`](review/examples/) | Minimal runnable example |
+
+## Scope
+
+This codebase implements the **primary-force** FF-PINN pipeline described in the
+manuscript (SPGF + Stokes drag). Acoustic wake and other secondary inter-particle
+hydrodynamic mechanisms are outside the scope of the present surrogates and are
+**not** included.
 
 ## Citation
 
-If you use this software, please cite the accompanying manuscript:
-
 ```bibtex
-@article{ffpinn2026,
-  title   = {{Physics-informed neural networks with Fourier features for acoustic particle agglomeration}},
-  author  = {<author list to be filled in upon acceptance>},
-  journal = {<journal name>},
-  year    = {2026},
-  volume  = {<volume>},
-  pages   = {<pages>},
-  doi     = {<doi>},
-  note    = {Code: \url{<repository URL>} (release \texttt{v1.0.0})}
+@article{ffpinn_aa,
+  title   = {{Accelerating Acoustic Agglomeration Predictions: A Physics-informed Neural Network with Fourier Featuring for Sound Pressure Gradient and Stokes Drag}},
+  author  = {Yin, Hang and Liu, Pengzhan and Ng, Bing Feng},
+  journal = {<journal>},
+  year    = {<year>},
+  note    = {Code release accompanying the manuscript}
 }
 ```
-
-The `v1.0.0` tag (see [`review/CHANGELOG.md`](review/CHANGELOG.md)) is the manuscript-submission release.
-
-## License / attribution
-
-Use and citation should follow the manuscript and institutional policies. No license file is implied unless one is added separately.
